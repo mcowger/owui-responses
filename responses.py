@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: OpenAI Responses API Manifold
 required_open_webui_version: 0.6.28
-requirements: aiohttp, fastapi, pydantic>=2
+requirements: openai>=2.29.0,<3, pydantic>=2.12.5,<3
 version: 1.0.0
 license: MIT
 
@@ -26,7 +26,7 @@ Use the version in the alpha-preview or main branches instead.
 # - core/model_catalog.py       Single source of truth for OpenAI model IDs, aliases, and capabilities.
 # - core/markers.py             Helpers for encoding and parsing invisible history markers.
 # - openai_api/types.py         Typed models for the OpenAI Responses API.
-# - openai_api/client.py        Thin aiohttp-based client for the OpenAI Responses API.
+# - openai_api/client.py        Thin OpenAI SDK client for the OpenAI Responses API.
 # - domain/types.py             Shared domain types for the OpenAI Responses engine and adapters.
 # - domain/history.py           History reconstruction and persistence helpers.
 # - domain/tools.py             Tool definitions, registry/executor interfaces, and merge policy.
@@ -230,40 +230,10 @@ class UserValves(BaseModel):
         return (value or "").upper()
 
 
-class RuntimeConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class RuntimeConfig(PipeValves):
+    """Effective merged configuration used while handling a request."""
 
-    BASE_URL: str
-    API_KEY: str
-
-    MODEL_ID: str
-
-    REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled"]
-    PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"]
-
-    PERSIST_TOOL_RESULTS: bool
-    PARALLEL_TOOL_CALLS: bool
-    ENABLE_STRICT_TOOL_CALLING: bool
-    MAX_TOOL_CALLS: int | None
-    MAX_FUNCTION_CALL_LOOPS: int
-
-    ENABLE_WEB_SEARCH_TOOL: bool = False
-    WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None] = "medium"
-    WEB_SEARCH_USER_LOCATION: str | None = None
-    WEB_SEARCH_ALLOWED_DOMAINS: str | None = None
-    WEB_SEARCH_EXTERNAL_WEB_ACCESS: bool = True
-    WEB_SEARCH_INCLUDE_SOURCES: bool = True
-
-    ENABLE_CODE_INTERPRETER_TOOL: bool = False
-    CODE_INTERPRETER_CONTAINER_JSON: str | None = None
-
-    REMOTE_MCP_SERVERS_JSON: str | None = None
-
-    TRUNCATION: Literal["auto", "disabled"] = "auto"
-
-    PROMPT_CACHE_KEY: Literal["id", "email"] = "id"
-
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = DEFAULT_PIPE_LOG_LEVEL
+    pass
 
 
 def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeConfig:
@@ -540,8 +510,6 @@ from typing import Any, Mapping
 #             model capabilities to match Responses API model cards.
 # =============================================================================
 
-# Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
-#
 # Feature flags:
 # - function_calling       → Supports custom tools / function calling in Responses.
 # - reasoning              → Supports `reasoning` options (reasoning models).
@@ -552,269 +520,108 @@ from typing import Any, Mapping
 # - code_interpreter_tool  → Built-in Code interpreter tool in Responses.
 # - deep_research          → Deep research orchestration models.
 # - verbosity              → Supports `text.verbosity` parameter.
-MODEL_FEATURES: dict[str, set[str]] = {
-    # -------------------------------------------------------------------------
-    # GPT-5 family (reasoning + tools)
-    # -------------------------------------------------------------------------
-    "gpt-5.5": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5.4": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5.4-mini": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5.4-nano": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5-auto": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5.1": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5.1-pro": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5-pro": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5-mini": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    "gpt-5-nano": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-        "verbosity",
-    },
-    # Codex variants (reasoning models, tool-heavy, no verbosity param)
-    "gpt-5.1-codex": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "code_interpreter_tool",
-    },
-    "gpt-5.1-codex-max": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "code_interpreter_tool",
-    },
-    "gpt-5.1-codex-mini": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "code_interpreter_tool",
-    },
-    "gpt-5-codex": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "code_interpreter_tool",
-    },
-    "codex-mini-latest": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "code_interpreter_tool",
-    },
-    # Chat-tuned GPT-5 models (non-reasoning, supports tools)
-    "gpt-5.1-chat-latest": {
-        "function_calling",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    "gpt-5-chat-latest": {
-        "function_calling",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    # -------------------------------------------------------------------------
-    # GPT-4.x family
-    # -------------------------------------------------------------------------
-    "gpt-4.1": {
-        "function_calling",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    "gpt-4.1-mini": {
-        "function_calling",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    "gpt-4.1-nano": {
-        "function_calling",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    "gpt-4o": {
-        "function_calling",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    "gpt-4o-mini": {
-        "function_calling",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    # ChatGPT-branded 4o model (no tools / function calling in Responses)
-    "chatgpt-4o-latest": set(),
-    # -------------------------------------------------------------------------
-    # o-series reasoning models
-    # -------------------------------------------------------------------------
-    "o3": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    "o3-mini": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    "o3-pro": {
-        "function_calling",
-        "reasoning",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-    },
-    "o4-mini": {
-        "function_calling",
-        "reasoning",
-        "reasoning_summary",
-        "web_search_tool",
-        "file_search_tool",
-        "image_gen_tool",
-        "code_interpreter_tool",
-    },
-    # -------------------------------------------------------------------------
-    # Deep research models
-    # -------------------------------------------------------------------------
-    "o3-deep-research": {
-        "reasoning",
-        "reasoning_summary",
-        "deep_research",
-        "web_search_tool",
-        "file_search_tool",
-    },
-    "o4-mini-deep-research": {
-        "reasoning",
-        "reasoning_summary",
-        "deep_research",
-        "web_search_tool",
-        "file_search_tool",
-    },
+FUNCTION_TOOL = "function_calling"
+REASONING = "reasoning"
+REASONING_SUMMARY = "reasoning_summary"
+WEB_SEARCH = "web_search_tool"
+FILE_SEARCH = "file_search_tool"
+IMAGE_GEN = "image_gen_tool"
+CODE_INTERPRETER = "code_interpreter_tool"
+DEEP_RESEARCH = "deep_research"
+VERBOSITY = "verbosity"
+
+GPT5_REASONING_FEATURES = {
+    FUNCTION_TOOL,
+    REASONING,
+    REASONING_SUMMARY,
+    WEB_SEARCH,
+    FILE_SEARCH,
+    IMAGE_GEN,
+    CODE_INTERPRETER,
+    VERBOSITY,
 }
+GPT5_CODEX_FEATURES = {
+    FUNCTION_TOOL,
+    REASONING,
+    REASONING_SUMMARY,
+    WEB_SEARCH,
+    FILE_SEARCH,
+    CODE_INTERPRETER,
+}
+CHAT_TOOL_FEATURES = {
+    FUNCTION_TOOL,
+    WEB_SEARCH,
+    FILE_SEARCH,
+    IMAGE_GEN,
+    CODE_INTERPRETER,
+}
+GPT4_NANO_FEATURES = {FUNCTION_TOOL, IMAGE_GEN, CODE_INTERPRETER}
+O_SERIES_FEATURES = {
+    FUNCTION_TOOL,
+    REASONING,
+    REASONING_SUMMARY,
+    WEB_SEARCH,
+    FILE_SEARCH,
+    IMAGE_GEN,
+    CODE_INTERPRETER,
+}
+O3_PRO_FEATURES = {FUNCTION_TOOL, REASONING, WEB_SEARCH, FILE_SEARCH, IMAGE_GEN}
+DEEP_RESEARCH_FEATURES = {REASONING, REASONING_SUMMARY, DEEP_RESEARCH, WEB_SEARCH, FILE_SEARCH}
+FUTURE_OPENAI_BASELINE_FEATURES = {FUNCTION_TOOL, REASONING, REASONING_SUMMARY, WEB_SEARCH}
+UNKNOWN_MODEL_BASELINE_FEATURES = {FUNCTION_TOOL}
+
+
+def _models(profile: set[str], *model_ids: str) -> dict[str, set[str]]:
+    """Assign a reusable capability profile to model identifiers."""
+
+    return {model_id: set(profile) for model_id in model_ids}
+
+
+# Exact overrides remain small; future models are covered by inference rules below.
+MODEL_FEATURES: dict[str, set[str]] = {
+    **_models(
+        GPT5_REASONING_FEATURES,
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5-auto",
+        "gpt-5.1",
+        "gpt-5.1-pro",
+        "gpt-5-pro",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+    ),
+    **_models(
+        GPT5_CODEX_FEATURES,
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "gpt-5-codex",
+        "codex-mini-latest",
+    ),
+    **_models(CHAT_TOOL_FEATURES, "gpt-5.1-chat-latest", "gpt-5-chat-latest"),
+    **_models(CHAT_TOOL_FEATURES, "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"),
+    **_models(GPT4_NANO_FEATURES, "gpt-4.1-nano"),
+    **_models(O_SERIES_FEATURES, "o3", "o3-mini", "o4-mini"),
+    **_models(O3_PRO_FEATURES, "o3-pro"),
+    **_models(DEEP_RESEARCH_FEATURES, "o3-deep-research", "o4-mini-deep-research"),
+    "chatgpt-4o-latest": set(),
+}
+
+_FEATURE_INFERENCE_RULES: tuple[tuple[re.Pattern[str], set[str]], ...] = (
+    (re.compile(r"^chatgpt-4o-latest$"), set()),
+    (re.compile(r"^gpt-5(?:\.\d+)?-chat-latest$"), CHAT_TOOL_FEATURES),
+    (re.compile(r"^(?:gpt-5(?:\.\d+)?-codex(?:-.+)?|codex-.+)$"), GPT5_CODEX_FEATURES),
+    (re.compile(r"^gpt-5(?:\.\d+)?(?:-(?:mini|nano|pro|auto))?$"), GPT5_REASONING_FEATURES),
+    (re.compile(r"^gpt-4\.1-nano$"), GPT4_NANO_FEATURES),
+    (re.compile(r"^(?:gpt-4\.1(?:-mini)?|gpt-4o(?:-mini)?)$"), CHAT_TOOL_FEATURES),
+    (re.compile(r"^o\d+(?:-mini)?-deep-research$"), DEEP_RESEARCH_FEATURES),
+    (re.compile(r"^o\d+-pro$"), O3_PRO_FEATURES),
+    (re.compile(r"^o\d+(?:-mini)?$"), O_SERIES_FEATURES),
+)
+_OPENAI_MODEL_ID_RE = re.compile(r"^(?:gpt-|o\d|codex-|chatgpt-)")
 
 # Add entries to MODEL_ALIASES for any pseudo-model name users can pick.
 # Each alias is a preset that points to a base model and optional default params,
@@ -933,18 +740,30 @@ def alias_defaults(model_id: str) -> dict[str, Any]:
     return deepcopy(params) if params else {}
 
 
+def _infer_features(model_id: str) -> set[str] | None:
+    """Infer capabilities for known model families not listed explicitly."""
+
+    for pattern, feature_set in _FEATURE_INFERENCE_RULES:
+        if pattern.match(model_id):
+            return set(feature_set)
+    if _OPENAI_MODEL_ID_RE.match(model_id):
+        return set(FUTURE_OPENAI_BASELINE_FEATURES)
+    return set(UNKNOWN_MODEL_BASELINE_FEATURES)
+
+
 def features(model_id: str) -> set[str]:
     """Return the capability set for the canonical base model."""
 
     canonical = base_model(model_id, MODEL_ALIASES)
     feature_set = MODEL_FEATURES.get(canonical)
-    if feature_set is None and canonical and canonical not in _UNKNOWN_LOGGED:
-        _UNKNOWN_LOGGED.add(canonical)
-        _logger.warning(
-            "Unknown model_id in MODEL_FEATURES: %s (canonical=%s)", model_id, canonical
-        )
-        return set()
-    return feature_set or set()
+    if feature_set is not None:
+        return set(feature_set)
+
+    inferred = _infer_features(canonical)
+    if inferred is not None:
+        return inferred
+
+    return set()
 
 
 def supports(feature: str, model_id: str) -> bool:
@@ -1423,12 +1242,11 @@ __all__ = [
 ]
 
 # === openai_api/client.py ===
-"""Thin aiohttp-based client for the OpenAI Responses API."""
+"""Thin OpenAI SDK client for the OpenAI Responses API."""
 
-import json
 from typing import Any, AsyncIterator
 
-import aiohttp
+from openai import AsyncOpenAI
 
 # [build.py] internal imports removed in monolith:
 # from .types import (
@@ -1444,17 +1262,21 @@ class OpenAIClient:
     """HTTP client for the OpenAI Responses API."""
 
     def __init__(self) -> None:
-        self._session: aiohttp.ClientSession | None = None
+        self._clients: dict[tuple[str, str], AsyncOpenAI] = {}
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
+    def _get_client(self, *, base_url: str, api_key: str) -> AsyncOpenAI:
+        normalized_base_url = base_url.rstrip("/")
+        cache_key = (normalized_base_url, api_key)
+        client = self._clients.get(cache_key)
+        if client is None:
+            client = AsyncOpenAI(api_key=api_key, base_url=normalized_base_url)
+            self._clients[cache_key] = client
+        return client
 
     async def close(self) -> None:
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
+        for client in list(self._clients.values()):
+            await client.close()
+        self._clients.clear()
 
     async def stream_responses(
         self,
@@ -1463,27 +1285,12 @@ class OpenAIClient:
         base_url: str,
         api_key: str,
     ) -> AsyncIterator[ResponseEvent]:
-        session = await self._get_session()
-        url = f"{base_url.rstrip('/')}/responses"
+        client = self._get_client(base_url=base_url, api_key=api_key)
         payload = dump_responses_request(validate_responses_request(request))
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "text/event-stream",
-            "Content-Type": "application/json",
-        }
-
-        async with session.post(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-            buffer = ""
-            async for chunk in resp.content.iter_any():
-                buffer += chunk.decode()
-                while "\n\n" in buffer:
-                    raw, buffer = buffer.split("\n\n", 1)
-                    data = _extract_data(raw)
-                    if data is None:
-                        continue
-                    event_payload = json.loads(data)
-                    yield parse_responses_event(event_payload)
+        payload["stream"] = True
+        stream = await client.responses.create(**payload)
+        async for event in stream:
+            yield parse_responses_event(_sdk_model_to_dict(event))
 
     async def create_response(
         self,
@@ -1492,33 +1299,22 @@ class OpenAIClient:
         base_url: str,
         api_key: str,
     ) -> dict[str, Any]:
-        session = await self._get_session()
-        url = f"{base_url.rstrip('/')}/responses"
+        client = self._get_client(base_url=base_url, api_key=api_key)
         payload = dump_responses_request(validate_responses_request(request))
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-
-        async with session.post(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+        response = await client.responses.create(**payload)
+        return _sdk_model_to_dict(response)
 
 
-def _extract_data(raw: str) -> str | None:
-    lines = raw.splitlines()
-    data_lines: list[str] = []
-    for line in lines:
-        if not line:
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[5:].lstrip())
-    if not data_lines:
-        return None
-    return "\n".join(data_lines)
+def _sdk_model_to_dict(value: Any) -> dict[str, Any]:
+    """Convert OpenAI SDK Pydantic-like objects to plain dictionaries."""
+
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_none=True)
+    if hasattr(value, "dict"):
+        return value.dict()
+    return {"type": getattr(value, "type", type(value).__name__), "value": str(value)}
 
 
 __all__ = ["OpenAIClient"]
@@ -1701,6 +1497,10 @@ class HistoryStore(Protocol):
 def _render_system_content(content: object) -> str:
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        if "text" in content:
+            return str(content.get("text", ""))
+        return str(content)
     if isinstance(content, Iterable):
         parts: list[str] = []
         for block in content:
@@ -1713,6 +1513,10 @@ def _render_system_content(content: object) -> str:
 
 
 def _to_input_block(block: dict) -> dict:
+    if isinstance(block, str):
+        return {"type": "input_text", "text": block}
+    if not isinstance(block, dict):
+        return {"type": "input_text", "text": str(block)}
     kind = block.get("type")
     if kind == "text":
         return {"type": "input_text", "text": block.get("text", "")}
@@ -1968,6 +1772,15 @@ def _strictify_schema(schema: dict) -> dict:
     """Recursively enforce strict JSON Schema semantics for objects."""
 
     schema = _ensure_object_schema(schema)
+
+    for combiner in ("anyOf", "oneOf", "allOf"):
+        variants = schema.get(combiner)
+        if isinstance(variants, list):
+            schema[combiner] = [
+                _strictify_schema(variant) if isinstance(variant, dict) else variant
+                for variant in variants
+            ]
+
     schema_type = schema.get("type")
     if schema_type == "object" or (
         isinstance(schema_type, list) and "object" in schema_type
@@ -1983,7 +1796,14 @@ def _strictify_schema(schema: dict) -> dict:
             strict_prop = _strictify_schema(prop_schema)
             if prop_name not in original_required:
                 current_type = strict_prop.get("type")
-                strict_prop["type"] = _make_nullable(current_type)
+                if current_type is not None:
+                    strict_prop["type"] = _make_nullable(current_type)
+                elif isinstance(strict_prop.get("anyOf"), list):
+                    strict_prop["anyOf"] = [*strict_prop["anyOf"], {"type": "null"}]
+                elif isinstance(strict_prop.get("oneOf"), list):
+                    strict_prop["oneOf"] = [*strict_prop["oneOf"], {"type": "null"}]
+                else:
+                    strict_prop = {"anyOf": [strict_prop, {"type": "null"}]}
             strict_props[prop_name] = strict_prop
             required.append(prop_name)
 
@@ -2048,6 +1868,8 @@ class WebSearchTool(BaseModel):
     type: Literal["web_search"] = "web_search"
     search_context_size: Literal["low", "medium", "high"] | None = None
     user_location: dict[str, Any] | None = None
+    filters: dict[str, Any] | None = None
+    external_web_access: bool | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2065,11 +1887,21 @@ class McpTool(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-ToolModel = FunctionTool | WebSearchTool | McpTool
+class CodeInterpreterTool(BaseModel):
+    """Code interpreter tool definition."""
+
+    type: Literal["code_interpreter"] = "code_interpreter"
+    container: dict[str, Any] = Field(default_factory=lambda: {"type": "auto"})
+
+    model_config = ConfigDict(extra="forbid")
+
+
+ToolModel = FunctionTool | WebSearchTool | McpTool | CodeInterpreterTool
 _TOOL_MODEL_MAP: dict[str, Type[ToolModel]] = {
     "function": FunctionTool,
     "web_search": WebSearchTool,
     "mcp": McpTool,
+    "code_interpreter": CodeInterpreterTool,
 }
 
 
@@ -2095,7 +1927,14 @@ def _coerce_tool(raw: dict) -> dict | None:
 
 def _tool_identity(tool: dict) -> tuple[str | None, str | None]:
     tool_type = tool.get("type")
-    name = tool.get("name") if tool_type == "function" else None
+    if tool_type == "function":
+        name = tool.get("name")
+    elif tool_type == "mcp":
+        name = tool.get("server_label") or tool.get("server_url")
+    elif tool_type == "web_search":
+        name = _stable_json_key(tool)
+    else:
+        name = tool.get("id") or tool.get("name")
     return (str(tool_type) if tool_type is not None else None, name)
 
 
@@ -2220,6 +2059,13 @@ def build_web_search_tools(
         "search_context_size": cfg.WEB_SEARCH_CONTEXT_SIZE,
     }
 
+    if cfg.WEB_SEARCH_EXTERNAL_WEB_ACCESS is False:
+        tool["external_web_access"] = False
+
+    allowed_domains = _parse_string_list(cfg.WEB_SEARCH_ALLOWED_DOMAINS)
+    if allowed_domains:
+        tool["filters"] = {"allowed_domains": allowed_domains}
+
     if cfg.WEB_SEARCH_USER_LOCATION:
         try:
             tool["user_location"] = json.loads(cfg.WEB_SEARCH_USER_LOCATION)
@@ -2229,7 +2075,50 @@ def build_web_search_tools(
     return [tool]
 
 
-__all__ = ["build_web_search_tools"]
+def build_code_interpreter_tools(
+    model_id: str,
+    features: set[str],
+    cfg: RuntimeConfig,
+) -> list[dict[str, Any]]:
+    """Return a code_interpreter tool definition when enabled and supported."""
+
+    allow_code_interpreter = "code_interpreter_tool" in features or supports(
+        "code_interpreter_tool", model_id
+    )
+    if not allow_code_interpreter or not cfg.ENABLE_CODE_INTERPRETER_TOOL:
+        return []
+
+    container: dict[str, Any] = {"type": "auto"}
+    if cfg.CODE_INTERPRETER_CONTAINER_JSON:
+        try:
+            parsed_container = json.loads(cfg.CODE_INTERPRETER_CONTAINER_JSON)
+            if isinstance(parsed_container, dict):
+                container = parsed_container
+            else:
+                _logger.warning("CODE_INTERPRETER_CONTAINER_JSON must be a JSON object; using auto container.")
+        except Exception:
+            _logger.warning("CODE_INTERPRETER_CONTAINER_JSON is not valid JSON; using auto container.")
+
+    return [{"type": "code_interpreter", "container": container}]
+
+
+def _parse_string_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    text = raw.strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except Exception:
+            _logger.warning("Expected JSON array but failed to parse value: %s", text)
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+__all__ = ["build_web_search_tools", "build_code_interpreter_tools"]
 
 # === domain/code_interpreter.py ===
 """Helpers for code_interpreter events and outputs.
@@ -3575,7 +3464,7 @@ class OpenWebUIToolRegistry(ToolRegistry):
 class OpenWebUIToolExecutor(ToolExecutor):
     """Execute tool calls using callables from ``__tools__``."""
 
-    def __init__(self, registry: dict[str, Any]):
+    def __init__(self, registry: dict[str, Any], *, parallel: bool = True):
         callables: dict[str, Any] = {}
         for entry in (registry or {}).values():
             if not isinstance(entry, dict):
@@ -3585,59 +3474,52 @@ class OpenWebUIToolExecutor(ToolExecutor):
             if isinstance(name, str) and name and fn is not None:
                 callables[name] = fn
         self._callables = callables
+        self._parallel = parallel
 
     async def execute(self, calls: list[ToolCall]) -> list[ToolResult]:
-        results: list[ToolResult] = []
-        for call in calls:
-            fn = self._callables.get(call.name)
-            if not fn:
-                results.append(
-                    ToolResult(
-                        call_id=call.call_id,
-                        output="Tool not found",
-                        status="error",
-                        error_message="Tool not found",
-                    )
-                )
-                continue
+        if self._parallel and len(calls) > 1:
+            return list(await asyncio.gather(*(self._execute_one(call) for call in calls)))
+        return [await self._execute_one(call) for call in calls]
 
-            try:
-                args = json.loads(call.arguments_json or "{}")
-            except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-                results.append(
-                    ToolResult(
-                        call_id=call.call_id,
-                        output=f"Invalid JSON arguments: {exc}",
-                        status="error",
-                        error_message=str(exc),
-                    )
-                )
-                continue
+    async def _execute_one(self, call: ToolCall) -> ToolResult:
+        fn = self._callables.get(call.name)
+        if not fn:
+            return ToolResult(
+                call_id=call.call_id,
+                output="Tool not found",
+                status="error",
+                error_message="Tool not found",
+            )
 
-            try:
-                if inspect.iscoroutinefunction(fn):
-                    value = await fn(**args)
-                else:
-                    value = await asyncio.to_thread(fn, **args)
-                output = json.dumps(value, default=str)
-                results.append(
-                    ToolResult(
-                        call_id=call.call_id,
-                        output=output,
-                        status="ok",
-                        error_message=None,
-                    )
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                results.append(
-                    ToolResult(
-                        call_id=call.call_id,
-                        output=f"Tool error: {exc}",
-                        status="error",
-                        error_message=str(exc),
-                    )
-                )
-        return results
+        try:
+            args = json.loads(call.arguments_json or "{}")
+        except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+            return ToolResult(
+                call_id=call.call_id,
+                output=f"Invalid JSON arguments: {exc}",
+                status="error",
+                error_message=str(exc),
+            )
+
+        try:
+            if inspect.iscoroutinefunction(fn):
+                value = await fn(**args)
+            else:
+                value = await asyncio.to_thread(fn, **args)
+            output = json.dumps(value, default=str)
+            return ToolResult(
+                call_id=call.call_id,
+                output=output,
+                status="ok",
+                error_message=None,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            return ToolResult(
+                call_id=call.call_id,
+                output=f"Tool error: {exc}",
+                status="error",
+                error_message=str(exc),
+            )
 
 
 __all__ = ["OpenWebUIToolRegistry", "OpenWebUIToolExecutor"]
@@ -3732,22 +3614,26 @@ def build_mcp_tools(cfg: RuntimeConfig) -> list[dict]:
         return []
 
     tools: list[dict] = []
-    if isinstance(entries, list):
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            label = entry.get("server_label")
-            url = entry.get("server_url")
-            if not isinstance(label, str) or not isinstance(url, str):
-                continue
-            tool = {"type": "mcp", "server_label": label, "server_url": url}
-            if "require_approval" in entry:
-                tool["require_approval"] = entry.get("require_approval")
-            if "allowed_tools" in entry:
-                tool["allowed_tools"] = entry.get("allowed_tools")
-            if "headers" in entry:
-                tool["headers"] = entry.get("headers")
-            tools.append(tool)
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return []
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("server_label")
+        url = entry.get("server_url")
+        if not isinstance(label, str) or not isinstance(url, str):
+            continue
+        tool = {"type": "mcp", "server_label": label, "server_url": url}
+        if "require_approval" in entry:
+            tool["require_approval"] = entry.get("require_approval")
+        if "allowed_tools" in entry:
+            tool["allowed_tools"] = entry.get("allowed_tools")
+        if "headers" in entry:
+            tool["headers"] = entry.get("headers")
+        tools.append(tool)
     return tools
 
 
@@ -3766,6 +3652,7 @@ from typing import Any, Iterable
 # from openai_responses_manifold.domain import (
 #     ResponsesEngine,
 #     ToolPolicy,
+#     build_code_interpreter_tools,
 #     build_web_search_tools,
 #     route_auto_model,
 # )
@@ -3851,6 +3738,94 @@ class Pipe:
             return await __tools__
         return __tools__
 
+    def _prompt_cache_key(self, cfg: RuntimeConfig, ctx: TurnContext) -> str | None:
+        if cfg.PROMPT_CACHE_KEY == "email":
+            return ctx.metadata.get("user_email")
+        return ctx.metadata.get("user_id")
+
+    def _build_tools_for_request(
+        self,
+        *,
+        request: ResponsesRequest,
+        ctx: TurnContext,
+        cfg: RuntimeConfig,
+        registry: OpenWebUIToolRegistry,
+        base_tools: list[dict],
+        extra_tools: list[dict],
+    ) -> None:
+        web_search_tools = build_web_search_tools(
+            model_id=ctx.model_id, features=ctx.features, cfg=cfg
+        )
+        code_interpreter_tools = build_code_interpreter_tools(
+            model_id=ctx.model_id, features=ctx.features, cfg=cfg
+        )
+        tools_for_responses = ToolPolicy.build_responses_tools(
+            model_id=ctx.model_id,
+            features=ctx.features,
+            cfg=cfg,
+            registry=registry,
+            body_tools=base_tools,
+            extra_tools=extra_tools,
+            mcp_tools=build_mcp_tools(cfg),
+            web_search_tools=[*web_search_tools, *code_interpreter_tools],
+        )
+        if tools_for_responses:
+            request.tools = tools_for_responses
+
+    def _apply_request_config(self, request: ResponsesRequest, cfg: RuntimeConfig, ctx: TurnContext) -> None:
+        request.truncation = cfg.TRUNCATION
+        request.prompt_cache_key = self._prompt_cache_key(cfg, ctx)
+        request.parallel_tool_calls = cfg.PARALLEL_TOOL_CALLS
+
+        if "reasoning_summary" in ctx.features and cfg.REASONING_SUMMARY != "disabled":
+            request.reasoning = request.reasoning or {}
+            request.reasoning["summary"] = cfg.REASONING_SUMMARY
+
+        if "reasoning" in ctx.features and cfg.PERSIST_REASONING_TOKENS != "disabled":
+            request.include = list(request.include or [])
+            if "reasoning.encrypted_content" not in request.include:
+                request.include.append("reasoning.encrypted_content")
+
+        if cfg.WEB_SEARCH_INCLUDE_SOURCES and any(t.get("type") == "web_search" for t in (request.tools or [])):
+            request.include = list(request.include or [])
+            if "web_search_call.action.sources" not in request.include:
+                request.include.append("web_search_call.action.sources")
+
+    @staticmethod
+    def _is_auto_model(ctx: TurnContext) -> bool:
+        owui_model_id = (ctx.metadata.get("owui_model_id") or "").lower()
+        return owui_model_id.endswith(".gpt-5-auto") or owui_model_id.endswith(".gpt-5-auto-dev")
+
+    async def _persist_result_citations(
+        self,
+        result: TurnResult,
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        metadata = metadata or {}
+        chat_id = metadata.get("chat_id")
+        message_id = metadata.get("message_id")
+        if not result.citations or not chat_id or not message_id:
+            return
+        try:
+            from open_webui.models.chats import Chats
+
+            Chats.upsert_message_to_chat_by_id_and_message_id(
+                chat_id,
+                message_id,
+                {
+                    "sources": [
+                        {
+                            "source": {"name": c.source_name, "url": c.url},
+                            "document": c.document,
+                            "metadata": [c.metadata],
+                        }
+                        for c in result.citations
+                    ]
+                },
+            )
+        except Exception:
+            get_logger(__name__).debug("Failed to persist citations to Open WebUI chat", exc_info=True)
+
     async def pipe(
         self,
         body: dict[str, Any] | None = None,
@@ -3890,7 +3865,7 @@ class Pipe:
             history_key = {"chat_id": (__metadata__ or {}).get("chat_id"), "pipe_id": self.id}
             resolved_tools = await self._resolve_tools(__tools__ or {})
             registry = OpenWebUIToolRegistry(resolved_tools)
-            executor = OpenWebUIToolExecutor(resolved_tools)
+            executor = OpenWebUIToolExecutor(resolved_tools, parallel=cfg.PARALLEL_TOOL_CALLS)
 
             if __task__ is not None:
                 task_body = __task_body__ if __task_body__ is not None else body or {}
@@ -3912,42 +3887,17 @@ class Pipe:
                 body=body, ctx=ctx, history_manager=self.history_manager, history_key=history_key
             )
 
-            mcp_tools = build_mcp_tools(cfg)
-            web_search_tools = build_web_search_tools(
-                model_id=ctx.model_id, features=ctx.features, cfg=cfg
-            )
-            tools_for_responses = ToolPolicy.build_responses_tools(
-                model_id=ctx.model_id,
-                features=ctx.features,
+            self._build_tools_for_request(
+                request=request,
+                ctx=ctx,
                 cfg=cfg,
                 registry=registry,
-                body_tools=base_tools,
+                base_tools=base_tools,
                 extra_tools=extra_tools,
-                mcp_tools=mcp_tools,
-                web_search_tools=web_search_tools,
             )
-            if tools_for_responses:
-                request.tools = tools_for_responses
+            self._apply_request_config(request, cfg, ctx)
 
-            request.truncation = cfg.TRUNCATION
-            request.prompt_cache_key = cfg.PROMPT_CACHE_KEY
-
-            if "reasoning_summary" in ctx.features and cfg.REASONING_SUMMARY != "disabled":
-                request.reasoning = request.reasoning or {}
-                request.reasoning["summary"] = cfg.REASONING_SUMMARY
-
-            if "reasoning" in ctx.features and cfg.PERSIST_REASONING_TOKENS != "disabled":
-                request.include = list(request.include or [])
-                if "reasoning.encrypted_content" not in request.include:
-                    request.include.append("reasoning.encrypted_content")
-
-            if any(t.get("type") == "web_search" for t in (request.tools or [])):
-                request.include = list(request.include or [])
-                if "web_search_call.action.sources" not in request.include:
-                    request.include.append("web_search_call.action.sources")
-
-            owui_model_id = (ctx.metadata.get("owui_model_id") or "").lower()
-            if owui_model_id.endswith(".gpt-5-auto") or owui_model_id.endswith(".gpt-5-auto-dev"):
+            if self._is_auto_model(ctx):
                 request = await route_auto_model(
                     client=self.client, request=request, ctx=ctx, tools=request.tools or [], events=events
                 )
@@ -3960,26 +3910,7 @@ class Pipe:
                 tool_executor=executor,
             )
 
-            if result.citations and (__metadata__ or {}).get("chat_id") and (__metadata__ or {}).get("message_id"):
-                try:
-                    from open_webui.models.chats import Chats
-
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        (__metadata__ or {}).get("chat_id"),
-                        (__metadata__ or {}).get("message_id"),
-                        {
-                            "sources": [
-                                {
-                                    "source": {"name": c.source_name, "url": c.url},
-                                    "document": c.document,
-                                    "metadata": [c.metadata],
-                                }
-                                for c in result.citations
-                            ]
-                        },
-                    )
-                except Exception:
-                    pass
+            await self._persist_result_citations(result, __metadata__)
 
             return result.text
 
