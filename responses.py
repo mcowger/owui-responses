@@ -1807,6 +1807,37 @@ def _make_nullable(type_value: object) -> object:
     return type_value
 
 
+# Keywords that are valid JSON Schema but are not permitted by OpenAI's
+# strict function-calling subset.  If any of these appear anywhere in a
+# tool's parameter schema we must NOT enable strict mode for that tool.
+_OPENAI_STRICT_INCOMPATIBLE_KEYS: frozenset[str] = frozenset({
+    "propertyNames",
+    "patternProperties",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "if",
+    "then",
+    "else",
+    "not",
+    "$comment",
+    "contentSchema",
+    "contains",
+    "prefixItems",
+})
+
+
+def _schema_is_strict_compatible(schema: object) -> bool:
+    """Return False if the schema contains any keyword banned in strict mode."""
+
+    if isinstance(schema, dict):
+        if _OPENAI_STRICT_INCOMPATIBLE_KEYS.intersection(schema):
+            return False
+        return all(_schema_is_strict_compatible(v) for v in schema.values())
+    if isinstance(schema, list):
+        return all(_schema_is_strict_compatible(item) for item in schema)
+    return True
+
+
 def _strictify_schema(schema: dict) -> dict:
     """Recursively enforce strict JSON Schema semantics for objects."""
 
@@ -2033,8 +2064,16 @@ class ToolPolicy:
 
             tool = deepcopy(raw_tool)
             if tool_type == "function" and cfg.ENABLE_STRICT_TOOL_CALLING:
-                tool["parameters"] = _strictify_schema(tool.get("parameters"))
-                tool["strict"] = True
+                params = tool.get("parameters") or {}
+                if _schema_is_strict_compatible(params):
+                    tool["parameters"] = _strictify_schema(params)
+                    tool["strict"] = True
+                else:
+                    _logger.debug(
+                        "Skipping strict mode for tool %r: schema contains "
+                        "keywords incompatible with OpenAI strict function calling.",
+                        tool.get("name"),
+                    )
             identity = _tool_identity(tool)
             if identity in deduped:
                 deduped.pop(identity, None)
