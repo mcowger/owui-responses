@@ -2945,6 +2945,13 @@ class ResponsesEngine:
                 tool_results = await tool_executor.execute(tool_calls)
                 state.tool_calls_executed += len(tool_results)
 
+                # Emit each tool call as a collapsible <details type="tool_calls"> block
+                # so Open WebUI renders the expandable input/output UI.
+                for call, result in zip(tool_calls, tool_results):
+                    block = _format_tool_call_delta(call, result)
+                    state.assistant_visible_text += block
+                    state.assistant_internal_text += block
+                    await events.delta(block)
 
                 call_items = self._extract_function_call_items(response)
                 result_items = self._tool_results_to_output_items(tool_results)
@@ -3349,6 +3356,30 @@ class ResponsesEngine:
                 "source": {"name": citation.source_name},
             }
         )
+
+
+def _format_tool_call_delta(call: ToolCall, result: ToolResult) -> str:
+    """Render a tool call + result as an Open WebUI <details type="tool_calls"> block."""
+    import html as _h
+    try:
+        args_dict = json.loads(call.arguments_json or "{}")
+        escaped_args = _h.escape(json.dumps(args_dict, ensure_ascii=False))
+    except Exception:
+        escaped_args = _h.escape(call.arguments_json or "")
+    try:
+        parsed_output = json.loads(result.output or "{}")
+        escaped_result = _h.escape(json.dumps(parsed_output, ensure_ascii=False))
+    except Exception:
+        escaped_result = _h.escape(json.dumps(result.output or "", ensure_ascii=False))
+    error_attr = ' error="true"' if result.status != "ok" else ""
+    return (
+        f'<details type="tool_calls" done="true" id="{_h.escape(call.call_id)}" '
+        f'name="{_h.escape(call.name)}" '
+        f'arguments="{escaped_args}" result="{escaped_result}" '
+        f'files="" embeds=""{error_attr}>\n'
+        f"<summary>Tool Executed</summary>\n"
+        f"</details>\n"
+    )
 
 
 def _should_persist_item(item: dict[str, Any], cfg: RuntimeConfig) -> bool:
