@@ -54,7 +54,7 @@ if _DEFAULT_LOG_LEVEL not in _LOG_LEVELS:
 
 
 class PipeValves(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     API_KEY: str = Field(
         default=((os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()),
@@ -139,7 +139,7 @@ class PipeValves(BaseModel):
 
 
 class UserValves(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     THINKING_LEVEL: Literal["disabled", "minimal", "low", "medium", "high", "INHERIT"] = Field(
         default="INHERIT"
