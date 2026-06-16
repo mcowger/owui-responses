@@ -3670,14 +3670,19 @@ def map_completions_to_responses(
         openwebui_model_id=ctx.metadata.get("owui_model_id"),
     )
 
+    # Reasoning models reject temperature and top_p entirely.
+    is_reasoning_model = "reasoning" in ctx.features
+    temperature = None if is_reasoning_model else body.get("temperature")
+    top_p = None if is_reasoning_model else body.get("top_p")
+
     request = ResponsesRequest(
         model=ctx.model_id,
         input=input_items,
         instructions=instructions,
         stream=True,
         store=True,
-        temperature=body.get("temperature"),
-        top_p=body.get("top_p"),
+        temperature=temperature,
+        top_p=top_p,
         top_logprobs=body.get("top_logprobs"),
         truncation=body.get("truncation"),
         max_output_tokens=body.get("max_tokens"),
