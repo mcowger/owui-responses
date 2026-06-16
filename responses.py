@@ -1508,6 +1508,19 @@ from typing import Iterable, Protocol, Tuple
 
 MARKER_PLACEHOLDER = "<!--openai_responses:marker-->"
 
+import re as _re
+_DETAILS_BLOCK_RE = _re.compile(r'<details\b[^>]*>.*?</details>', _re.DOTALL)
+
+
+def _strip_details_blocks(text: str) -> str:
+    """Remove UI-only <details> blocks from assistant history text.
+
+    These blocks (<details type="tool_calls">, <details type="reasoning">)
+    are rendered by Open WebUI but must not be sent back to the API as
+    conversation context — they confuse the model and waste tokens.
+    """
+    return _DETAILS_BLOCK_RE.sub('', text).strip()
+
 
 def strip_marker_placeholders(text: str | None) -> str:
     """Remove internal marker placeholders that should never be user-visible."""
@@ -1648,6 +1661,9 @@ class HistoryManager:
             raw = msg.get("content", "") or ""
             if not isinstance(raw, str):
                 raw = str(raw)
+
+            # Strip UI-only <details> blocks before sending as API history.
+            raw = _strip_details_blocks(raw)
 
             if not contains_marker(raw):
                 text = raw.strip()
@@ -2943,7 +2959,8 @@ class ResponsesEngine:
                 for call, result in zip(tool_calls, tool_results):
                     block = _format_tool_call_delta(call, result)
                     state.assistant_visible_text += block
-                    state.assistant_internal_text += block
+                    # Do not add to internal_text — details blocks must not
+                    # appear in history context sent back to the API.
                     await events.delta(block)
 
                 call_items = self._extract_function_call_items(response)
@@ -2972,7 +2989,11 @@ class ResponsesEngine:
             except Exception:
                 self._logger.debug("Failed to emit failure status", exc_info=True)
         finally:
-            final_text = state.assistant_internal_text or state.error_message or ""
+            # visible_text includes <details> blocks for UI rendering.
+            # internal_text is clean prose only, used for API history context.
+            # Store visible_text so blocks persist on page reload, but use
+            # internal_text when reconstructing input for future API calls.
+            final_text = state.assistant_visible_text or state.assistant_internal_text or state.error_message or ""
             items_to_persist = [
                 item for item in state.structured_items if _should_persist_item(item, cfg)
             ]
@@ -3130,7 +3151,8 @@ class ResponsesEngine:
                     f"</details>\n"
                 )
                 state.assistant_visible_text += block
-                state.assistant_internal_text += block
+                # Do not add to internal_text — reasoning blocks must not
+                # appear in history context sent back to the API.
                 await events.delta(block)
             return None
 
@@ -3290,7 +3312,10 @@ class ResponsesEngine:
     def _record_structured_item(self, item: dict[str, Any], state: TurnState, cfg: RuntimeConfig) -> None:
         state.structured_items.append(item)
         if _should_persist_item(item, cfg):
+            # Add placeholder to both texts so marker injection can find it
+            # in whichever one is used as the base for persist_items_for_message.
             state.assistant_internal_text += MARKER_PLACEHOLDER
+            state.assistant_visible_text += MARKER_PLACEHOLDER
 
 
     async def _emit_log_citation(
