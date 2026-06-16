@@ -3637,8 +3637,10 @@ class OpenWebUIToolExecutor(ToolExecutor):
             return [await self._execute_one(call) for call in calls]
 
         # Only truly parallelize calls to *different* tool names.
-        # Multiple calls to the same tool are serialized to prevent races on
-        # shared state (e.g. two update_task calls overwriting each other).
+        # Multiple calls to the same tool are serialized for thread safety
+        # (e.g. two update_task calls on shared state must not race).
+        # It is the model's responsibility not to issue dependent calls to
+        # *different* tools in the same batch.
         seen_names: set[str] = set()
         has_duplicates = any(
             (name := call.name) in seen_names or seen_names.add(name)  # type: ignore[func-returns-value]
