@@ -100,6 +100,18 @@ class PipeValves(BaseModel):
         default=True,
         description="If enabled, adds the Google Search grounding tool to every request.",
     )
+    USE_GOOGLE_MAPS: bool = Field(
+        default=False,
+        description="If enabled, adds the Google Maps tool to every request.",
+    )
+    USE_URL_CONTEXT: bool = Field(
+        default=True,
+        description="If enabled, Gemini will automatically fetch URLs mentioned in prompts.",
+    )
+    USE_CODE_EXECUTION: bool = Field(
+        default=True,
+        description="If enabled, Gemini can write and execute Python in a sandboxed environment on Google's servers.",
+    )
     MAX_TOOL_CALLS: int = Field(
         default=30,
         description="Maximum number of tool calls allowed in a single request.",
@@ -140,6 +152,9 @@ class UserValves(BaseModel):
     THINKING_BUDGET: int | None = Field(default=None)
     INCLUDE_THOUGHTS: Literal["true", "false", "INHERIT"] = Field(default="INHERIT")
     USE_GOOGLE_SEARCH: Literal["true", "false", "INHERIT"] = Field(default="INHERIT")
+    USE_GOOGLE_MAPS: Literal["true", "false", "INHERIT"] = Field(default="INHERIT")
+    USE_URL_CONTEXT: Literal["true", "false", "INHERIT"] = Field(default="INHERIT")
+    USE_CODE_EXECUTION: Literal["true", "false", "INHERIT"] = Field(default="INHERIT")
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"] = Field(
         default="INHERIT"
     )
@@ -180,9 +195,10 @@ def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeCon
     if include_thoughts not in (None, "INHERIT"):
         data["INCLUDE_THOUGHTS"] = include_thoughts == "true"
 
-    use_google_search = overrides.get("USE_GOOGLE_SEARCH")
-    if use_google_search not in (None, "INHERIT"):
-        data["USE_GOOGLE_SEARCH"] = use_google_search == "true"
+    for key in ("USE_GOOGLE_SEARCH", "USE_GOOGLE_MAPS", "USE_URL_CONTEXT", "USE_CODE_EXECUTION"):
+        val = overrides.get(key)
+        if val not in (None, "INHERIT"):
+            data[key] = val == "true"
 
     if overrides.get("LOG_LEVEL") not in (None, "INHERIT"):
         data["LOG_LEVEL"] = overrides["LOG_LEVEL"]
@@ -756,8 +772,8 @@ def _build_safety_settings(body: dict[str, Any], cfg: RuntimeConfig) -> list[typ
     return None
 
 
-def _tool_config(*, google_search: bool = False) -> types.ToolConfig:
-    if google_search:
+def _tool_config(*, server_tools: bool = False) -> types.ToolConfig:
+    if server_tools:
         # VALIDATED is required when include_server_side_tool_invocations is True.
         # AUTO is not supported in that mode per the tool combination docs.
         return types.ToolConfig(
@@ -767,7 +783,14 @@ def _tool_config(*, google_search: bool = False) -> types.ToolConfig:
     return types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="AUTO"))
 
 
-def _build_tools(registry: OpenWebUIToolRegistry, *, google_search: bool = False) -> list[types.Tool] | None:
+def _build_tools(
+    registry: OpenWebUIToolRegistry,
+    *,
+    google_search: bool = False,
+    google_maps: bool = False,
+    url_context: bool = False,
+    code_execution: bool = False,
+) -> list[types.Tool] | None:
     declarations = [
         types.FunctionDeclaration(
             name=definition.name,
@@ -776,13 +799,30 @@ def _build_tools(registry: OpenWebUIToolRegistry, *, google_search: bool = False
         )
         for definition in registry.iter_definitions()
     ]
-    if google_search:
-        # When combining Google Search with custom functions, both must live in a
-        # single Tool object per the tool combination docs.
-        return [types.Tool(
-            google_search=types.GoogleSearch(),
+    has_server_tools = google_search or google_maps or url_context
+    if has_server_tools:
+        # When combining server-side built-in tools with custom functions, all must
+        # live in a single Tool object per the tool combination docs.
+        combined = types.Tool(
             function_declarations=declarations if declarations else None,
-        )]
+        )
+        if google_search:
+            combined.google_search = types.GoogleSearch()
+        if google_maps:
+            combined.google_maps = types.GoogleMaps()
+        if url_context:
+            combined.url_context = types.UrlContext()
+        tools = [combined]
+        # Code execution must be a separate Tool object.
+        if code_execution:
+            tools.append(types.Tool(code_execution=types.ToolCodeExecution()))
+        return tools
+    if code_execution:
+        tools = []
+        if declarations:
+            tools.append(types.Tool(function_declarations=declarations))
+        tools.append(types.Tool(code_execution=types.ToolCodeExecution()))
+        return tools
     if not declarations:
         return None
     return [types.Tool(function_declarations=declarations)]
@@ -860,7 +900,7 @@ def _build_generation_config(
     cfg: RuntimeConfig,
     system_instruction: str | None,
     tools: list[types.Tool] | None,
-    google_search: bool = False,
+    server_tools: bool = False,
 ) -> types.GenerateContentConfig:
     payload: dict[str, Any] = {
         "temperature": body.get("temperature"),
@@ -875,7 +915,7 @@ def _build_generation_config(
         "response_schema": body.get("response_schema"),
         "response_json_schema": body.get("response_json_schema"),
         "tools": tools,
-        "tool_config": _tool_config(google_search=google_search) if tools else None,
+        "tool_config": _tool_config(server_tools=server_tools) if tools else None,
         "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
     }
     filtered = {key: value for key, value in payload.items() if value is not None}
@@ -1029,13 +1069,23 @@ class Pipe:
         )
 
         use_search = cfg.USE_GOOGLE_SEARCH and allow_tools
-        gemini_tools = _build_tools(tool_registry, google_search=use_search) if allow_tools else None
+        use_maps = cfg.USE_GOOGLE_MAPS and allow_tools
+        use_url_context = cfg.USE_URL_CONTEXT and allow_tools
+        use_code_execution = cfg.USE_CODE_EXECUTION and allow_tools
+        has_server_tools = use_search or use_maps or use_url_context
+        gemini_tools = _build_tools(
+            tool_registry,
+            google_search=use_search,
+            google_maps=use_maps,
+            url_context=use_url_context,
+            code_execution=use_code_execution,
+        ) if allow_tools else None
         config = _build_generation_config(
             body=body,
             cfg=cfg,
             system_instruction=system_instruction,
             tools=gemini_tools,
-            google_search=use_search,
+            server_tools=has_server_tools,
         )
 
         logger = _get_logger(cfg.LOG_LEVEL)
@@ -1056,14 +1106,45 @@ class Pipe:
                 for block in thought_blocks:
                     await events.delta(block)
 
-                # Render server-side tool invocations (e.g. Google Search) as <details> blocks.
-                if use_search and model_content is not None:
+                # Render server-side tool invocations (e.g. Search, Maps, URL) as <details> blocks.
+                if has_server_tools and model_content is not None:
                     for part in (model_content.parts or []):
                         if getattr(part, "tool_call", None) is not None:
                             block = _format_server_tool_call_detail(part)
                             if block:
                                 visible_blocks.append(block)
                                 await events.delta(block)
+
+                # Render code execution results as <details> blocks.
+                if use_code_execution and model_content is not None:
+                    for part in (model_content.parts or []):
+                        ec = getattr(part, "executable_code", None)
+                        cr = getattr(part, "code_execution_result", None)
+                        if ec is not None:
+                            code = getattr(ec, "code", "") or ""
+                            lang = str(getattr(ec, "language", "") or "python").lower()
+                            block = (
+                                '<details type="tool_calls" done="true" id="" name="code_execution" '
+                                'arguments="" result="" files="" embeds="">\n'
+                                "<summary>Code Executed</summary>\n"
+                                f"```{lang}\n{html.escape(code)}\n```\n"
+                                "</details>\n"
+                            )
+                            visible_blocks.append(block)
+                            await events.delta(block)
+                        if cr is not None:
+                            output = getattr(cr, "output", "") or ""
+                            outcome = str(getattr(cr, "outcome", "") or "")
+                            block = (
+                                '<details type="tool_calls" done="true" id="" name="code_result" '
+                                'arguments="" result="" files="" embeds="">\n'
+                                "<summary>Code Result</summary>\n"
+                                f"```\n{html.escape(output)}\n```\n"
+                                f"{('Outcome: ' + html.escape(outcome)) if outcome else ''}\n"
+                                "</details>\n"
+                            )
+                            visible_blocks.append(block)
+                            await events.delta(block)
 
                 tool_calls = _tool_calls_from_response(response) if allow_tools else []
 
@@ -1080,7 +1161,7 @@ class Pipe:
                     if model_content is not None:
                         persisted_contents.append(model_content)
                     final_text = _extract_visible_text(model_content).strip() or getattr(response, "text", "") or ""
-                    if use_search:
+                    if has_server_tools:
                         await _emit_grounding_sources(response, events)
                     if final_text:
                         await events.delta(final_text)
