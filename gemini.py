@@ -96,6 +96,10 @@ class PipeValves(BaseModel):
         default=False,
         description="If enabled, requests BLOCK_NONE for standard Gemini text safety categories.",
     )
+    USE_GOOGLE_SEARCH: bool = Field(
+        default=True,
+        description="If enabled, adds the Google Search grounding tool to every request.",
+    )
     MAX_TOOL_CALLS: int = Field(
         default=30,
         description="Maximum number of tool calls allowed in a single request.",
@@ -744,11 +748,18 @@ def _build_safety_settings(body: dict[str, Any], cfg: RuntimeConfig) -> list[typ
     return None
 
 
-def _tool_config() -> types.ToolConfig:
+def _tool_config(*, google_search: bool = False) -> types.ToolConfig:
+    if google_search:
+        # VALIDATED is required when include_server_side_tool_invocations is True.
+        # AUTO is not supported in that mode per the tool combination docs.
+        return types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="VALIDATED"),
+            include_server_side_tool_invocations=True,
+        )
     return types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="AUTO"))
 
 
-def _build_tool_declarations(registry: OpenWebUIToolRegistry) -> list[types.Tool] | None:
+def _build_tools(registry: OpenWebUIToolRegistry, *, google_search: bool = False) -> list[types.Tool] | None:
     declarations = [
         types.FunctionDeclaration(
             name=definition.name,
@@ -757,9 +768,48 @@ def _build_tool_declarations(registry: OpenWebUIToolRegistry) -> list[types.Tool
         )
         for definition in registry.iter_definitions()
     ]
+    if google_search:
+        # When combining Google Search with custom functions, both must live in a
+        # single Tool object per the tool combination docs.
+        return [types.Tool(
+            google_search=types.GoogleSearch(),
+            function_declarations=declarations if declarations else None,
+        )]
     if not declarations:
         return None
     return [types.Tool(function_declarations=declarations)]
+
+
+def _extract_grounding_citations(response: types.GenerateContentResponse, text: str) -> str:
+    """Insert inline markdown citation links from grounding metadata into text."""
+    try:
+        candidate = response.candidates[0] if response.candidates else None
+        if not candidate:
+            return text
+        meta = candidate.grounding_metadata
+        if not meta:
+            return text
+        chunks = meta.grounding_chunks or []
+        supports = meta.grounding_supports or []
+        if not chunks or not supports:
+            return text
+
+        sorted_supports = sorted(supports, key=lambda s: s.segment.end_index, reverse=True)
+        for support in sorted_supports:
+            end = support.segment.end_index
+            if not support.grounding_chunk_indices:
+                continue
+            links = []
+            for i in support.grounding_chunk_indices:
+                if i < len(chunks):
+                    web = chunks[i].web
+                    if web and web.uri:
+                        links.append(f"[{i + 1}]({web.uri})")
+            if links:
+                text = text[:end] + " " + ", ".join(links) + text[end:]
+    except Exception:
+        pass
+    return text
 
 
 def _build_generation_config(
@@ -768,6 +818,7 @@ def _build_generation_config(
     cfg: RuntimeConfig,
     system_instruction: str | None,
     tools: list[types.Tool] | None,
+    google_search: bool = False,
 ) -> types.GenerateContentConfig:
     payload: dict[str, Any] = {
         "temperature": body.get("temperature"),
@@ -782,7 +833,7 @@ def _build_generation_config(
         "response_schema": body.get("response_schema"),
         "response_json_schema": body.get("response_json_schema"),
         "tools": tools,
-        "tool_config": _tool_config() if tools else None,
+        "tool_config": _tool_config(google_search=google_search) if tools else None,
         "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
     }
     filtered = {key: value for key, value in payload.items() if value is not None}
@@ -935,8 +986,15 @@ class Pipe:
             model_id=model_id,
         )
 
-        gemini_tools = _build_tool_declarations(tool_registry) if allow_tools else None
-        config = _build_generation_config(body=body, cfg=cfg, system_instruction=system_instruction, tools=gemini_tools)
+        use_search = cfg.USE_GOOGLE_SEARCH and allow_tools
+        gemini_tools = _build_tools(tool_registry, google_search=use_search) if allow_tools else None
+        config = _build_generation_config(
+            body=body,
+            cfg=cfg,
+            system_instruction=system_instruction,
+            tools=gemini_tools,
+            google_search=use_search,
+        )
 
         logger = _get_logger(cfg.LOG_LEVEL)
         visible_blocks: list[str] = []
@@ -957,10 +1015,22 @@ class Pipe:
                     await events.delta(block)
 
                 tool_calls = _tool_calls_from_response(response) if allow_tools else []
+
+                # Always append model_content to the live contents list.  When Google Search
+                # is active, the response includes toolCall/toolResponse parts that must be
+                # circulated back verbatim (including thought_signatures) for context to be
+                # preserved across iterations.  We use the live SDK object so no serialization
+                # round-trip strips thought_signature.  Do NOT add to persisted_contents for
+                # the same reason — cross-turn history only needs function_response items.
+                if model_content is not None:
+                    contents.append(model_content)
+
                 if not tool_calls:
                     if model_content is not None:
                         persisted_contents.append(model_content)
                     final_text = _extract_visible_text(model_content).strip() or getattr(response, "text", "") or ""
+                    if use_search:
+                        final_text = _extract_grounding_citations(response, final_text)
                     if final_text:
                         await events.delta(final_text)
                         final_text_emitted = True
@@ -968,16 +1038,6 @@ class Pipe:
 
                 if tool_calls_executed + len(tool_calls) > cfg.MAX_TOOL_CALLS:
                     raise RuntimeError("Gemini exceeded MAX_TOOL_CALLS for this request")
-
-                # Append the model's function_call turn to the live contents list so
-                # subsequent Gemini calls within this request see the correct call/response
-                # pair.  Do NOT add to persisted_contents: the thought_signature field on
-                # function_call parts is dropped by the SDK's Pydantic model on round-trip
-                # (extra="forbid"), so replaying serialised function_call content across
-                # turns causes a 400 INVALID_ARGUMENT thought_signature error.  Cross-turn
-                # history only needs the function_response items (confirmed working pattern).
-                if model_content is not None:
-                    contents.append(model_content)
 
                 tool_results = await tool_executor.execute(tool_calls)
                 tool_calls_executed += len(tool_results)
@@ -999,6 +1059,7 @@ class Pipe:
                     cfg=cfg,
                     system_instruction=system_instruction,
                     tools=None,
+                    google_search=False,
                 )
                 fallback_response = await self._single_response(
                     client=client,
