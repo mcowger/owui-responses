@@ -3123,14 +3123,10 @@ class ResponsesEngine:
         if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
             if event.text:
                 import html as _html
-                escaped = "\n".join(
-                    f"> {_html.escape(line)}" if not line.startswith(">") else _html.escape(line)
-                    for line in event.text.splitlines()
-                )
                 block = (
                     f'<details type="reasoning" done="true">\n'
                     f"<summary>Thought</summary>\n"
-                    f"{escaped}\n"
+                    f"{_html.escape(event.text)}\n"
                     f"</details>\n"
                 )
                 state.assistant_visible_text += block
