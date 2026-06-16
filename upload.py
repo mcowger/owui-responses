@@ -34,7 +34,7 @@ FUNCTION_FILE = SCRIPT_DIR / "responses.py"
 def main() -> None:
     parser = argparse.ArgumentParser(description="Upload responses.py to Open WebUI")
     parser.add_argument("--create", action="store_true", help="Create instead of update")
-    parser.add_argument("--id", default="openai_responses", help="Function id in Open WebUI (default: openai_responses)")
+    parser.add_argument("--id", default="openai_responses_manifold", help="Function id in Open WebUI (default: openai_responses_manifold)")
     parser.add_argument("--name", default="OpenAI Responses API Manifold", help="Display name")
     args = parser.parse_args()
 
