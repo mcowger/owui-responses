@@ -2895,11 +2895,6 @@ class ResponsesEngine:
         final_text: str = ""
 
         try:
-            await events.status("Calling OpenAI Responses API…", done=False, hidden=True)
-        except Exception:
-            self._logger.debug("Failed to emit start status", exc_info=True)
-
-        try:
             if request.model_router_result:
                 await self._emit_routing_status(request.model_router_result, events)
                 request.model_router_result = None
@@ -3013,8 +3008,6 @@ class ResponsesEngine:
             try:
                 if state.error_message:
                     await events.status(state.error_message, done=True, level="error")
-                else:
-                    await events.status("Response complete.", done=True, hidden=True)
             except Exception:
                 self._logger.debug("Failed to emit terminal status", exc_info=True)
 
@@ -3075,14 +3068,7 @@ class ResponsesEngine:
         api_key: str,
     ) -> dict[str, Any] | None:
         response_payload: dict[str, Any] | None = None
-        first_event = True
         async for event in self._client.stream_responses(request, base_url=base_url, api_key=api_key):
-            if first_event:
-                first_event = False
-                try:
-                    await events.status("Streaming response from model…", done=False, hidden=True)
-                except Exception:
-                    self._logger.debug("Failed to emit streaming status", exc_info=True)
             response_payload = await self._handle_event(event, state, events, ctx)
             if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent)):
                 break
