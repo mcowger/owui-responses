@@ -799,6 +799,11 @@ def _build_tools(
         )
         for definition in registry.iter_definitions()
     ]
+    # Maps and Code Execution cannot be combined in the same request (API limitation).
+    # If both are enabled, drop Code Execution — Maps was explicitly opted into.
+    if google_maps and code_execution:
+        code_execution = False
+
     has_server_tools = google_search or google_maps or url_context
     if has_server_tools:
         # When combining server-side built-in tools with custom functions, all must
