@@ -1187,7 +1187,7 @@ class Pipe:
                     cfg=cfg,
                     system_instruction=system_instruction,
                     tools=None,
-                    google_search=False,
+                    server_tools=False,
                 )
                 fallback_response = await self._single_response(
                     client=client,
