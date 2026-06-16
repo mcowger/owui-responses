@@ -141,34 +141,33 @@ class PipeValves(BaseModel):
 class UserValves(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    THINKING_LEVEL: Literal["disabled", "minimal", "low", "medium", "high"] | None = Field(
-        default=None,
-        description="Override thinking level. Leave unset to use the pipe default.",
+    THINKING_LEVEL: Literal["disabled", "minimal", "low", "medium", "high"] = Field(
+        default="disabled",
+        description="Gemini thinking level.",
     )
     THINKING_BUDGET: int | None = Field(
         default=None,
-        description="Override thinking budget. Leave unset to use the pipe default.",
+        description="Gemini thinking budget tokens. Leave blank to omit.",
     )
-    INCLUDE_THOUGHTS: bool | None = Field(
-        default=None,
-        description="Show visible thought blocks. Leave unset to use the pipe default.",
+    INCLUDE_THOUGHTS: bool = Field(
+        default=False,
+        description="Show visible thought blocks in the response.",
     )
-    SERVER_TOOL_MODE: Literal["search", "search_code", "maps", "code", "none"] | None = Field(
-        default=None,
-        description="Override server-side tool mode. Leave unset to use the pipe default.",
+    SERVER_TOOL_MODE: Literal["search", "search_code", "maps", "code", "none"] = Field(
+        default="search",
+        description=(
+            "Server-side tools to enable. "
+            "search = Google Search + URL Context. "
+            "search_code = Google Search + URL Context + Code Execution. "
+            "maps = Google Maps only. "
+            "code = Code Execution only. "
+            "none = no server-side tools."
+        ),
     )
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = Field(
-        default=None,
-        description="Override log level. Leave unset to use the pipe default.",
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default="INFO",
+        description="Logging level.",
     )
-
-    @field_validator("THINKING_LEVEL", mode="before")
-    @classmethod
-    def _normalize_thinking_level(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        v = str(value).strip().lower()
-        return None if v in ("", "inherit") else v
 
 
 class RuntimeConfig(PipeValves):
@@ -177,10 +176,11 @@ class RuntimeConfig(PipeValves):
 
 def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeConfig:
     data = pipe_valves.model_dump()
-    for key in ("THINKING_LEVEL", "THINKING_BUDGET", "INCLUDE_THOUGHTS", "SERVER_TOOL_MODE", "LOG_LEVEL"):
-        val = getattr(user_valves, key, None)
-        if val is not None:
-            data[key] = val
+    data["THINKING_LEVEL"] = user_valves.THINKING_LEVEL
+    data["THINKING_BUDGET"] = user_valves.THINKING_BUDGET
+    data["INCLUDE_THOUGHTS"] = user_valves.INCLUDE_THOUGHTS
+    data["SERVER_TOOL_MODE"] = user_valves.SERVER_TOOL_MODE
+    data["LOG_LEVEL"] = user_valves.LOG_LEVEL
     return RuntimeConfig(**data)
 
 
