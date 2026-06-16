@@ -2931,7 +2931,13 @@ class ResponsesEngine:
 
                 tool_results = await tool_executor.execute(tool_calls)
                 state.tool_calls_executed += len(tool_results)
+                call_items = self._extract_function_call_items(response)
                 result_items = self._tool_results_to_output_items(tool_results)
+                # Persist both the function_call and function_call_output items
+                # so that future turns can reconstruct the full exchange from history.
+                # Order matters: call must precede its output.
+                for item in call_items:
+                    self._record_structured_item(item, state, cfg)
                 for item in result_items:
                     self._record_structured_item(item, state, cfg)
 
@@ -2947,7 +2953,6 @@ class ResponsesEngine:
                 else:
                     # Fallback for endpoints that don't return an id: echo the
                     # function_call items back manually before the results.
-                    call_items = self._extract_function_call_items(response)
                     request.input = (request.input or []) + call_items + result_items
         except Exception as exc:
             self._logger.exception("Streaming turn failed")
