@@ -3584,10 +3584,17 @@ def build_turn_context(
     runtime_cfg: RuntimeConfig,
     __user__: dict | None,
     __metadata__: dict | None,
+    body: dict | None = None,
 ) -> TurnContext:
     metadata = __metadata__ or {}
-    owui_model_id = metadata.get("model", {}).get("id") if isinstance(metadata.get("model"), dict) else None
-    model_id = base_model(owui_model_id or runtime_cfg.MODEL_ID)
+
+    # Open WebUI resolves workspace/custom model names to their base_model_id before
+    # calling pipe(), storing it in body["model"] (e.g. "openai_responses.gpt-5.5").
+    # Use that as the primary source; fall back to the valve MODEL_ID config.
+    body_model = (body or {}).get("model") or ""
+    model_id = base_model(body_model or runtime_cfg.MODEL_ID)
+
+    owui_model_id = metadata.get("model_id") or body_model or None
     model_features = features(model_id)
     ctx_metadata = {
         "session_id": metadata.get("session_id"),
@@ -3904,6 +3911,7 @@ class Pipe:
                 runtime_cfg=cfg,
                 __user__=__user__,
                 __metadata__=__metadata__,
+                body=body,
             )
             history_key = {"chat_id": (__metadata__ or {}).get("chat_id"), "pipe_id": self.id}
             resolved_tools = await self._resolve_tools(__tools__ or {})
