@@ -102,7 +102,7 @@ class PipeValves(BaseModel):
             "Which server-side Gemini tools to enable. "
             "'search' = Google Search + URL Context (default). "
             "'search_code' = Google Search + URL Context + Code Execution. "
-            "'maps' = Google Maps + URL Context. "
+            "'maps' = Google Maps only (cannot combine with any other tool). "
             "'code' = Code Execution only. "
             "'none' = no server-side tools."
         ),
@@ -199,13 +199,18 @@ def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeCon
 
 
 def _resolve_server_tools(mode: str) -> tuple[bool, bool, bool, bool]:
-    """Return (google_search, google_maps, url_context, code_execution) for a mode."""
+    """Return (google_search, google_maps, url_context, code_execution) for a mode.
+
+    Known API restrictions:
+    - Maps cannot be combined with Search, URL Context, or Code Execution.
+    - Code Execution cannot be combined with Maps (covered above).
+    """
     if mode == "search":
         return True, False, True, False
     if mode == "search_code":
         return True, False, True, True
     if mode == "maps":
-        return False, True, True, False
+        return False, True, False, False  # Maps must be alone
     if mode == "code":
         return False, False, False, True
     # "none" or unknown
