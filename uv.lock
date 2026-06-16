@@ -458,8 +458,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "openai", specifier = ">=2.29.0,<3" },
-    { name = "pydantic", specifier = ">=2.12.5,<3" },
+    { name = "openai", specifier = "~=2.29" },
+    { name = "pydantic", specifier = "~=2.12" },
 ]
 
 [package.metadata.requires-dev]

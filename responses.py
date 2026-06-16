@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: OpenAI Responses API Manifold
 required_open_webui_version: 0.6.28
-requirements: openai>=2.29.0,<3, pydantic>=2.12.5,<3
+requirements: openai~=2.29, pydantic~=2.12
 version: 1.0.0
 license: MIT
 
@@ -207,11 +207,27 @@ class PipeValves(BaseModel):
 
 class UserValves(BaseModel):
     """
-    User-level overrides. Currently only LOG_LEVEL is honored; all other settings are pipe-global.
+    User-level overrides. Values set to ``INHERIT`` use the pipe-level default.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    REASONING_EFFORT: Literal["minimal", "low", "medium", "high", "INHERIT"] = Field(
+        default="INHERIT",
+        description="Reasoning effort for models that support it. 'INHERIT' uses the request/model default.",
+    )
+    REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled", "INHERIT"] = Field(
+        default="INHERIT",
+        description="Visible reasoning summary style. 'INHERIT' uses the pipe default.",
+    )
+    PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled", "INHERIT"] = Field(
+        default="INHERIT",
+        description="Request encrypted reasoning tokens. 'INHERIT' uses the pipe default.",
+    )
+    ENABLE_WEB_SEARCH_TOOL: Literal["true", "false", "INHERIT"] = Field(
+        default="INHERIT",
+        description="Enable OpenAI's built-in web_search tool. 'INHERIT' uses the pipe default.",
+    )
     LOG_LEVEL: Literal[
         "DEBUG",
         "INFO",
@@ -224,6 +240,18 @@ class UserValves(BaseModel):
         description="Select logging level. 'INHERIT' uses the pipe default.",
     )
 
+    @field_validator("REASONING_EFFORT", "REASONING_SUMMARY", "PERSIST_REASONING_TOKENS", mode="before")
+    @classmethod
+    def _normalize_user_reasoning_valves(cls, value: str) -> str:
+        return (value or "").lower() if (value or "").upper() != "INHERIT" else "INHERIT"
+
+    @field_validator("ENABLE_WEB_SEARCH_TOOL", mode="before")
+    @classmethod
+    def _normalize_user_web_search_tool(cls, value: str | bool) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return (value or "").lower() if (value or "").upper() != "INHERIT" else "INHERIT"
+
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def _normalize_user_log_level(cls, value: str) -> str:
@@ -233,16 +261,14 @@ class UserValves(BaseModel):
 class RuntimeConfig(PipeValves):
     """Effective merged configuration used while handling a request."""
 
-    pass
+    REASONING_EFFORT: Literal["minimal", "low", "medium", "high", "INHERIT"] = "INHERIT"
 
 
 def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeConfig:
     """Merge pipe-level and user valves into a runtime config.
 
     User valves override pipe valves when they specify a concrete value.
-    The only override today is ``LOG_LEVEL``; when it is set to
-    ``"INHERIT"`` (case-insensitive) the pipe-level ``LOG_LEVEL`` is
-    preserved.
+    ``INHERIT`` (case-insensitive) preserves the pipe-level/request default.
     """
 
     base_config = pipe_valves.model_dump()
@@ -251,6 +277,19 @@ def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeCon
     user_log_level = user_overrides.get("LOG_LEVEL")
     if isinstance(user_log_level, str) and user_log_level.upper() != "INHERIT":
         base_config["LOG_LEVEL"] = user_log_level.upper()
+
+    user_reasoning_effort = user_overrides.get("REASONING_EFFORT")
+    if isinstance(user_reasoning_effort, str) and user_reasoning_effort.upper() != "INHERIT":
+        base_config["REASONING_EFFORT"] = user_reasoning_effort.lower()
+
+    for field_name in ("REASONING_SUMMARY", "PERSIST_REASONING_TOKENS"):
+        value = user_overrides.get(field_name)
+        if isinstance(value, str) and value.upper() != "INHERIT":
+            base_config[field_name] = value.lower()
+
+    user_web_search = user_overrides.get("ENABLE_WEB_SEARCH_TOOL")
+    if isinstance(user_web_search, str) and user_web_search.upper() != "INHERIT":
+        base_config["ENABLE_WEB_SEARCH_TOOL"] = user_web_search.lower() == "true"
 
     return RuntimeConfig(**base_config)
 
@@ -3780,6 +3819,10 @@ class Pipe:
         if "reasoning_summary" in ctx.features and cfg.REASONING_SUMMARY != "disabled":
             request.reasoning = request.reasoning or {}
             request.reasoning["summary"] = cfg.REASONING_SUMMARY
+
+        if "reasoning" in ctx.features and cfg.REASONING_EFFORT != "INHERIT":
+            request.reasoning = request.reasoning or {}
+            request.reasoning["effort"] = cfg.REASONING_EFFORT
 
         if "reasoning" in ctx.features and cfg.PERSIST_REASONING_TOKENS != "disabled":
             request.include = list(request.include or [])
