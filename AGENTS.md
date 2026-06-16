@@ -34,7 +34,39 @@ uv run python upload.py --create
 
 1. Edit `responses.py`
 2. Commit your changes
-3. Run `uv run upload` to deploy
+3. Run `./upload.sh` to deploy
+
+## Reviewing a conversation for errors
+
+Use the Open WebUI API to fetch a chat by ID and inspect its message history,
+status history, and error logs.
+
+```bash
+CHAT_ID=282df76e-c702-4768-9351-b7ae11b219be
+
+curl -s "https://owui.home.cowger.us/api/v1/chats/$CHAT_ID" \
+  -H "Authorization: Bearer $OWUI_API_KEY" | python3 -m json.tool
+```
+
+Or source the `.env` file first:
+
+```bash
+source .env
+curl -s "$OWUI_URL/api/v1/chats/$CHAT_ID" \
+  -H "Authorization: Bearer $OWUI_API_KEY" | python3 -m json.tool
+```
+
+Key fields to look at in the response:
+
+| Field | What to look for |
+|---|---|
+| `chat.history.messages.<id>.statusHistory` | Per-message status steps and error descriptions |
+| `chat.history.messages.<id>.sources` | Attached error log citations from the manifold |
+| `chat.history.messages.<id>.content` | Final assistant response (empty string = failed turn) |
+| `chat.history.messages.<id>.done` | `false` means the turn never completed |
+
+Error details (stack traces, API error messages) are captured in the `sources`
+array of the assistant message under `source.name = "Error Logs"`.
 
 ## Environment variables
 
