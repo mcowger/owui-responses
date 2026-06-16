@@ -141,34 +141,34 @@ class PipeValves(BaseModel):
 class UserValves(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    THINKING_LEVEL: Literal["disabled", "minimal", "low", "medium", "high", "INHERIT"] = Field(
-        default="INHERIT"
+    THINKING_LEVEL: Literal["disabled", "minimal", "low", "medium", "high"] | None = Field(
+        default=None,
+        description="Override thinking level. Leave unset to use the pipe default.",
     )
-    THINKING_BUDGET: int | None = Field(default=None)
-    INCLUDE_THOUGHTS: Literal["true", "false", "INHERIT"] = Field(default="INHERIT")
-    SERVER_TOOL_MODE: Literal["search", "search_code", "maps", "code", "none", "INHERIT"] = Field(
-        default="INHERIT"
+    THINKING_BUDGET: int | None = Field(
+        default=None,
+        description="Override thinking budget. Leave unset to use the pipe default.",
     )
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"] = Field(
-        default="INHERIT"
+    INCLUDE_THOUGHTS: bool | None = Field(
+        default=None,
+        description="Show visible thought blocks. Leave unset to use the pipe default.",
+    )
+    SERVER_TOOL_MODE: Literal["search", "search_code", "maps", "code", "none"] | None = Field(
+        default=None,
+        description="Override server-side tool mode. Leave unset to use the pipe default.",
+    )
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = Field(
+        default=None,
+        description="Override log level. Leave unset to use the pipe default.",
     )
 
     @field_validator("THINKING_LEVEL", mode="before")
     @classmethod
-    def _normalize_thinking_level(cls, value: str) -> str:
-        return (value or "").lower() if (value or "").upper() != "INHERIT" else "INHERIT"
-
-    @field_validator("INCLUDE_THOUGHTS", mode="before")
-    @classmethod
-    def _normalize_include_thoughts(cls, value: str | bool) -> str:
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        return (value or "").lower() if (value or "").upper() != "INHERIT" else "INHERIT"
-
-    @field_validator("LOG_LEVEL", mode="before")
-    @classmethod
-    def _normalize_user_log_level(cls, value: str) -> str:
-        return (value or "").upper()
+    def _normalize_thinking_level(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        v = str(value).strip().lower()
+        return None if v in ("", "inherit") else v
 
 
 class RuntimeConfig(PipeValves):
@@ -177,24 +177,10 @@ class RuntimeConfig(PipeValves):
 
 def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeConfig:
     data = pipe_valves.model_dump()
-    overrides = user_valves.model_dump()
-
-    if overrides.get("THINKING_LEVEL") not in (None, "INHERIT"):
-        data["THINKING_LEVEL"] = overrides["THINKING_LEVEL"]
-
-    if overrides.get("THINKING_BUDGET") is not None:
-        data["THINKING_BUDGET"] = overrides["THINKING_BUDGET"]
-
-    include_thoughts = overrides.get("INCLUDE_THOUGHTS")
-    if include_thoughts not in (None, "INHERIT"):
-        data["INCLUDE_THOUGHTS"] = include_thoughts == "true"
-
-    if overrides.get("SERVER_TOOL_MODE") not in (None, "INHERIT"):
-        data["SERVER_TOOL_MODE"] = overrides["SERVER_TOOL_MODE"]
-
-    if overrides.get("LOG_LEVEL") not in (None, "INHERIT"):
-        data["LOG_LEVEL"] = overrides["LOG_LEVEL"]
-
+    for key in ("THINKING_LEVEL", "THINKING_BUDGET", "INCLUDE_THOUGHTS", "SERVER_TOOL_MODE", "LOG_LEVEL"):
+        val = getattr(user_valves, key, None)
+        if val is not None:
+            data[key] = val
     return RuntimeConfig(**data)
 
 
@@ -730,7 +716,7 @@ def _normalize_model_id(raw_model_id: str, default_model: str) -> str:
 
 def _resolve_thinking_level(body: dict[str, Any], cfg: RuntimeConfig) -> str | None:
     raw = body.get("thinking_level") or body.get("reasoning_effort") or cfg.THINKING_LEVEL
-    if raw in (None, "", "disabled", "INHERIT"):
+    if raw in (None, "", "disabled"):
         return None
     return str(raw).lower()
 
