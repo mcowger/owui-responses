@@ -2929,6 +2929,8 @@ class ResponsesEngine:
                     )
                     break
 
+                names = ", ".join(f"`{c.name}`" for c in tool_calls)
+                await events.status(f"Calling tool{'' if len(tool_calls) == 1 else 's'} {names}…", done=False)
                 tool_results = await tool_executor.execute(tool_calls)
                 state.tool_calls_executed += len(tool_results)
                 call_items = self._extract_function_call_items(response)
@@ -3209,7 +3211,14 @@ class ResponsesEngine:
             call_id = str(item.get("call_id") or item.get("id") or "")
             name = str(item.get("name") or "")
             arguments = item.get("arguments")
-            arguments_json = json.dumps(arguments) if arguments is not None else "{}"
+            # The Responses API returns arguments as a JSON string already.
+            # json.dumps-ing a string double-encodes it, so use it directly.
+            if isinstance(arguments, str):
+                arguments_json = arguments or "{}"
+            elif arguments is not None:
+                arguments_json = json.dumps(arguments)
+            else:
+                arguments_json = "{}"
             if call_id and name:
                 calls.append(ToolCall(call_id=call_id, name=name, arguments_json=arguments_json))
         return calls
