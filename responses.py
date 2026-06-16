@@ -3215,15 +3215,16 @@ class ResponsesEngine:
         return calls
 
     def _extract_function_call_items(self, response: dict[str, Any]) -> list[dict[str, Any]]:
-        """Return the raw function_call output items from a response.
+        """Return reasoning + function_call items from a response in output order.
 
-        The Responses API requires that every function_call item appears in
-        ``input`` before its matching function_call_output when not using
-        previous_response_id chaining.
+        The Responses API requires that when a function_call is accompanied by
+        a reasoning item, the reasoning item must appear in input immediately
+        before its function_call. We collect all reasoning and function_call
+        items preserving their original order.
         """
         return [
             item for item in (response.get("output") or [])
-            if isinstance(item, dict) and item.get("type") == "function_call"
+            if isinstance(item, dict) and item.get("type") in {"reasoning", "function_call"}
         ]
 
     def _tool_results_to_output_items(self, results: list[ToolResult]) -> list[dict[str, Any]]:
@@ -3312,7 +3313,11 @@ def _should_persist_item(item: dict[str, Any], cfg: RuntimeConfig) -> bool:
     if item_type in {"function_call", "function_call_output", "code_interpreter_call"}:
         return bool(cfg.PERSIST_TOOL_RESULTS)
     if item_type == "reasoning":
-        return cfg.PERSIST_REASONING_TOKENS == "conversation"
+        # Always persist reasoning items that accompany tool calls (identified
+        # by having no summary text — pure encrypted reasoning tokens) so they
+        # can be echoed back alongside their function_call on future turns.
+        # Also persist when the user has opted into conversation-level tokens.
+        return bool(cfg.PERSIST_TOOL_RESULTS) or cfg.PERSIST_REASONING_TOKENS == "conversation"
     return False
 
 
