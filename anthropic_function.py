@@ -791,6 +791,10 @@ async def create_request_payload(
         status = _PayloadStatus(__event_emitter__)
 
     actual_model_name = body["model"].split("/")[-1]
+    if not pipe._is_model_allowed(actual_model_name):
+        raise ValueError(
+            f"Model '{actual_model_name}' is not in the allowed models whitelist (Valves.MODEL_ID)"
+        )
     model_info = pipe.get_model_info(actual_model_name)
     max_tokens_limit = model_info["max_tokens"]
     requested_max_tokens = body.get("max_tokens", max_tokens_limit)
@@ -2698,22 +2702,22 @@ class StatusEmitter:
         self._last_hidden = hidden
 
     async def waiting(self) -> None:
-        await self.emit("Waiting for response...", done=False, hidden=False, force=True)
+        pass
 
     async def response_started_once(self) -> None:
-        if self._response_started:
-            return
-        self._response_started = True
-        await self.emit("Responding...", done=False)
+        pass
 
     async def activity(self, description: str) -> None:
         await self.emit(description, done=False)
 
     async def resume_after_tool(self) -> None:
-        await self.emit("Responding...", done=False)
+        pass
 
     async def complete(self, description: str) -> None:
-        await self.emit(description, done=True, force=True)
+        if not description:
+            await self.emit("", done=True, hidden=True, force=True)
+        else:
+            await self.emit(description, done=True, force=True)
 
     async def notification(self, content: str, *, type: str = "warning") -> None:
         await self._emit_event(
@@ -2786,6 +2790,10 @@ class Pipe:
         ANTHROPIC_BASE_URL: str = Field(
             default="https://api.anthropic.com",
             description="Custom base URL for the Anthropic API",
+        )
+        MODEL_ID: str = Field(
+            default="*",
+            description="Comma-separated allowed model IDs or wildcard patterns (e.g. 'claude-3-5-sonnet-*' or 'claude-3-5-sonnet-latest, claude-3-5-haiku-latest') exposed to Open WebUI. Use '*' to allow all models.",
         )
         ENABLE_FAST_MODE: bool = Field(
             default=False,
@@ -5709,52 +5717,63 @@ class Pipe:
         info.update(cls.MODEL_CAPABILITY_OVERRIDES.get(model_name, {}))
         return info
 
+    def _is_model_allowed(self, model_id: str) -> bool:
+        whitelist = [m.strip() for m in (self.valves.MODEL_ID or "").split(",") if m.strip()]
+        if not whitelist or "*" in whitelist:
+            return True
+        normalized_id = model_id.split("/")[-1].strip()
+        for item in whitelist:
+            item_norm = item.split("/")[-1].strip()
+            if item_norm == normalized_id or item_norm == model_id:
+                return True
+            if item_norm.endswith("*") and normalized_id.startswith(item_norm[:-1]):
+                return True
+            if item_norm.startswith("*") and normalized_id.endswith(item_norm[1:]):
+                return True
+        return False
+
     async def get_anthropic_models(self) -> List[dict]:
 
+        raw_models = []
         if (
             self._api_capabilities_cache
             and time.time() - self._api_capabilities_cache_ts < self._API_CACHE_TTL
         ):
-            models = []
             for name, info in self._api_capabilities_cache.items():
-                models.append(self._build_openwebui_model_entry(name, info))
-            return models
+                raw_models.append(self._build_openwebui_model_entry(name, info))
+        else:
+            from anthropic import AsyncAnthropic
 
-        from anthropic import AsyncAnthropic
+            new_cache: Dict[str, dict] = {}
+            try:
+                api_key = self.valves.ANTHROPIC_API_KEY
+                base_url = self.valves.ANTHROPIC_BASE_URL.strip() or None
+                client = AsyncAnthropic(
+                    api_key=api_key, **({"base_url": base_url} if base_url else {})
+                )
+                async for m in client.models.list():
+                    name = m.id
+                    display_name = getattr(m, "display_name", name)
 
-        models = []
-        new_cache: Dict[str, dict] = {}
-        try:
-            api_key = self.valves.ANTHROPIC_API_KEY
-            base_url = self.valves.ANTHROPIC_BASE_URL.strip() or None
-            client = AsyncAnthropic(
-                api_key=api_key, **({"base_url": base_url} if base_url else {})
-            )
-            async for m in client.models.list():
-                name = m.id
-                display_name = getattr(m, "display_name", name)
+                    info = self._parse_api_capabilities(m)
+                    info["_display_name"] = display_name
+                    new_cache[name] = info
 
-                info = self._parse_api_capabilities(m)
-                info["_display_name"] = display_name
-                new_cache[name] = info
+                    entry = self._build_openwebui_model_entry(name, info, display_name)
+                    raw_models.append(entry)
 
-                entry = self._build_openwebui_model_entry(name, info, display_name)
-                models.append(entry)
+                Pipe._api_capabilities_cache = new_cache
+                Pipe._api_capabilities_cache_ts = time.time()
+                logger.info(f"Cached capabilities for {len(new_cache)} models from API")
+            except Exception as e:
+                logging.warning(f"Could not fetch models from SDK/API: {e}")
 
-            Pipe._api_capabilities_cache = new_cache
-            Pipe._api_capabilities_cache_ts = time.time()
-            logger.info(f"Cached capabilities for {len(new_cache)} models from API")
-            return models
-        except Exception as e:
-            logging.warning(f"Could not fetch models from SDK/API: {e}")
+                if self._api_capabilities_cache:
+                    logging.info("Using stale capability cache as fallback")
+                    for name, info in self._api_capabilities_cache.items():
+                        raw_models.append(self._build_openwebui_model_entry(name, info))
 
-            if self._api_capabilities_cache:
-                logging.info("Using stale capability cache as fallback")
-                for name, info in self._api_capabilities_cache.items():
-                    models.append(self._build_openwebui_model_entry(name, info))
-                return models
-
-            return models
+        return [m for m in raw_models if self._is_model_allowed(m["id"])]
 
     @staticmethod
     def _build_openwebui_model_entry(
@@ -5781,6 +5800,10 @@ class Pipe:
         try:
 
             actual_model_name = body["model"].split("/")[-1]
+            if not self._is_model_allowed(actual_model_name):
+                raise ValueError(
+                    f"Model '{actual_model_name}' is not in the allowed models whitelist (Valves.MODEL_ID)"
+                )
             messages = body.get("messages", [])
 
             task_payload = {
@@ -8043,7 +8066,7 @@ class Pipe:
             await self.handle_errors(e, __event_emitter__)
             return final_text()
 
-        final_status = "✅ Response Complete"
+        final_status = ""
 
         show_token_setting = __user__["valves"].SHOW_TOKEN_COUNT
         if include_usage and show_token_setting != "Off" and total_usage:
@@ -8067,7 +8090,7 @@ class Pipe:
             filled = int(percentage / 10)
             bar = "█" * filled + "░" * (10 - filled)
 
-            final_status += f" [{bar}] {format_num(total_tokens)}/{context_label} ({percentage:.1f}%)"
+            final_status += f"[{bar}] {format_num(total_tokens)}/{context_label} ({percentage:.1f}%)"
 
             if (
                 show_token_setting == "With Cache"

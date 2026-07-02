@@ -1250,9 +1250,8 @@ class Pipe:
             executor = OpenWebUIToolExecutor(resolved_tools, parallel=True)
 
             if __task__ is not None:
-                task_body = __task_body__ if __task_body__ is not None else body
                 return await self._run_request(
-                    body=task_body,
+                    body=body,
                     cfg=cfg,
                     events=events,
                     tool_registry=registry,

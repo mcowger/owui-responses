@@ -4073,9 +4073,8 @@ class Pipe:
             executor = OpenWebUIToolExecutor(resolved_tools, parallel=cfg.PARALLEL_TOOL_CALLS)
 
             if __task__ is not None:
-                task_body = __task_body__ if __task_body__ is not None else body or {}
                 request = map_completions_to_responses(
-                    body=task_body, ctx=ctx, history_manager=self.history_manager, history_key=history_key
+                    body=body, ctx=ctx, history_manager=self.history_manager, history_key=history_key
                 )[0]
                 request.stream = False
                 request.store = False
