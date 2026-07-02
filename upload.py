@@ -5,9 +5,14 @@ Reads connection details from .env (copy .env.example and fill in your values).
 
 Usage:
     python upload.py                              # update responses.py
-    python upload.py --file gemini.py            # update gemini.py
-    python upload.py --create                    # create instead of update
-    python upload.py --id my_func_id             # override the function id
+    python upload.py gemini                       # update gemini.py (bare name)
+    python upload.py anthropic --create           # create anthropic.py
+    python upload.py --file custom.py             # explicit filename
+    python upload.py --id my_func_id              # override the function id
+
+The target may be given positionally or via --file, as a bare name
+("gemini"), a filename ("gemini.py"), or a path. Bare names get ".py"
+appended automatically.
 """
 
 import argparse
@@ -41,18 +46,44 @@ DEFAULTS = {
         "name": "Google Gemini API Manifold",
         "description": "Google Gemini API Manifold",
     },
+    "anthropic_function.py": {
+        "id": "anthropic_pipe",
+        "name": "Anthropic API Manifold",
+        "description": "Anthropic API Manifold",
+    },
+}
+
+# Friendly shorthands -> actual filenames (bare names get ".py" appended
+# unless matched here first).
+ALIASES = {
+    "anthropic": "anthropic_function.py",
 }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Upload an Open WebUI pipe file")
     parser.add_argument("--create", action="store_true", help="Create instead of update")
-    parser.add_argument("--file", default="responses.py", help="Pipe file to upload (default: responses.py)")
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Pipe to upload: bare name (gemini), filename (gemini.py), or path. Default: responses",
+    )
+    parser.add_argument("--file", default=None, help="Pipe file to upload (alternative to positional target)")
     parser.add_argument("--id", default=None, help="Function id in Open WebUI")
     parser.add_argument("--name", default=None, help="Display name")
     args = parser.parse_args()
 
-    function_file = SCRIPT_DIR / args.file
+    if args.target and args.file:
+        sys.exit("Provide either a positional target or --file, not both.")
+
+    raw_target = args.target or args.file or "responses"
+    # Accept bare names ("gemini"), filenames ("gemini.py"), and paths.
+    raw_target = ALIASES.get(raw_target, raw_target)
+    if not raw_target.endswith(".py"):
+        raw_target = f"{raw_target}.py"
+
+    function_file = SCRIPT_DIR / raw_target
     if not function_file.exists():
         sys.exit(f"Function file not found: {function_file}")
 

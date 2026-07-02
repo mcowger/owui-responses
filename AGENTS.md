@@ -17,24 +17,27 @@ cp .env.example .env
 ### Upload / update
 
 ```bash
-./upload.sh
+uv run python upload.py            # responses (default)
+uv run python upload.py gemini     # gemini.py
+uv run python upload.py anthropic  # anthropic_function.py
 ```
 
-This pushes `responses.py` to the live Open WebUI instance via
-`POST /api/v1/functions/id/openai_responses_manifold/update`.
+The target may be a bare name (`gemini`), a filename (`gemini.py`), or a
+path; bare names get `.py` appended. This pushes the file to the live
+Open WebUI instance via `POST /api/v1/functions/id/<function_id>/update`.
 The function reloads immediately — no restart required.
 
 ### First-time create (if the function doesn't exist yet)
 
 ```bash
-uv run python upload.py --create
+uv run python upload.py anthropic --create
 ```
 
 ## Development workflow
 
-1. Edit `responses.py`
+1. Edit the pipe file (`responses.py`, `gemini.py`, or `anthropic_function.py`)
 2. Commit your changes
-3. Run `./upload.sh` to deploy
+3. Run `uv run python upload.py <target>` to deploy
 
 ## Reviewing a conversation for errors
 
