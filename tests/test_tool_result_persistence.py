@@ -238,5 +238,169 @@ def test_tool_result_store_save_noop_without_chat_id():
     assert asyncio.run(run()) is False
 
 
+class _FakeToolUseBlock:
+    """Mimics an SDK ToolUseBlock with a partially-parsed `.input` (the state
+    left behind when jiter aborts mid-delta on malformed JSON)."""
+
+    type = "tool_use"
+
+    def __init__(self, block_id: str, name: str, input_: dict):
+        self.id = block_id
+        self.name = name
+        self.input = input_
+
+    def model_dump(self, exclude_none=True, mode="json"):
+        return {
+            "type": "tool_use",
+            "id": self.id,
+            "name": self.name,
+            "input": self.input,
+        }
+
+
+class _FakeFinalMessage:
+    def __init__(self, content: list, stop_reason: str = "tool_use"):
+        self.content = content
+        self.stop_reason = stop_reason
+        self.usage = None
+        self.stop_sequence = None
+
+
+class _FakeMessageStream:
+    """Mimics client.messages.stream(): async-iterates a few events, then
+    raises ValueError partway through (as the real SDK does when jiter hits
+    syntactically invalid partial JSON), but still answers
+    get_final_message() with whatever was accumulated so far."""
+
+    def __init__(self, final_message):
+        self._final_message = final_message
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def __aiter__(self):
+        return self._agen()
+
+    async def _agen(self):
+        if False:  # pragma: no cover - makes this an async generator
+            yield None
+        raise ValueError("expected value at line 1 column 48")
+
+    async def get_final_message(self):
+        return self._final_message
+
+
+class _FakeClient:
+    """Mimics AsyncAnthropic enough for _run_streaming_turn: client.messages
+    is an object with a .stream(**kwargs) method. `stream_fn` lets callers
+    return a different fake stream per invocation (e.g. malformed JSON on
+    the first turn, a clean end_turn on the next)."""
+
+    def __init__(self, stream_fn):
+        self._stream_fn = stream_fn
+
+    class _Messages:
+        def __init__(self, outer):
+            self._outer = outer
+
+        def stream(self, **kwargs):
+            return self._outer._stream_fn(**kwargs)
+
+    @property
+    def messages(self):
+        return _FakeClient._Messages(self)
+
+
+class _CollectingEvents:
+    def __init__(self):
+        self.deltas: list[str] = []
+        self.notifications: list[dict] = []
+
+    async def delta(self, content):
+        self.deltas.append(content)
+
+    async def replace(self, content):
+        pass
+
+    async def status(self, *a, **k):
+        pass
+
+    async def emit(self, event):
+        if isinstance(event, dict) and event.get("type") == "notification":
+            self.notifications.append(event)
+
+
+def test_run_streaming_turn_recovers_from_malformed_tool_input_json():
+    """Regression: the Anthropic SDK parses streamed tool_use input JSON
+    incrementally via jiter(partial_mode=True). If the model/provider emits
+    syntactically invalid JSON (e.g. a dangling `"area_filter": ` with no
+    value before the block closes), jiter raises ValueError from inside the
+    async iterator, which used to propagate uncaught and kill the whole
+    turn ("Error: expected value at line 1 column 48"). The pipe should
+    instead log and fall back to the partial snapshot, still executing the
+    (partially-parsed) tool call rather than crashing."""
+    pipe = _make_pipe()
+    pipe.valves.PERSIST_TOOL_RESULTS = False
+
+    executed_with: dict = {}
+
+    async def fake_tool(domain_filter=None, area_filter=None):
+        executed_with["domain_filter"] = domain_filter
+        executed_with["area_filter"] = area_filter
+        return "ok"
+
+    tools = {"ha_ha_search": {"callable": fake_tool}}
+    client_tool_names = {"ha_ha_search"}
+
+    # Partial input as left behind by jiter right before the malformed
+    # delta: only the fields parsed before the crash are present.
+    tool_block = _FakeToolUseBlock(
+        "toolu_1", "ha_ha_search", {"domain_filter": "automation"}
+    )
+    final_message = _FakeFinalMessage([tool_block], stop_reason="tool_use")
+
+    events = _CollectingEvents()
+
+    async def run():
+        # Cap the loop at 1 iteration's worth of tool execution by making the
+        # second turn (after tool results are appended) return no tool_use.
+        call_count = {"n": 0}
+
+        def stream_fn(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return _FakeMessageStream(final_message)
+            return _FakeMessageStream(_FakeFinalMessage([], stop_reason="end_turn"))
+
+        pipe._make_client = lambda api_key: _FakeClient(stream_fn)
+
+        return await pipe._run_streaming_turn(
+            payload={"messages": []},
+            client_tool_names=client_tool_names,
+            api_key="test-key",
+            tools=tools,
+            metadata={"chat_id": "chat-1"},
+            user={},
+            request=None,
+            emit=events.emit,
+            status=events.status,
+            delta=events.delta,
+            replace=events.replace,
+        )
+
+    asyncio.run(run())
+
+    # The tool ran with whatever partial input jiter had parsed before the
+    # crash — area_filter defaulted to None rather than the call failing.
+    assert executed_with["domain_filter"] == "automation"
+    assert executed_with["area_filter"] is None
+    # No uncaught exception reached _handle_error / the top-level "Error: ..."
+    # response path.
+    assert not events.notifications
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

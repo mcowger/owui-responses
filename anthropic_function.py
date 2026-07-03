@@ -1450,31 +1450,50 @@ class Pipe:
 
         for loop_index in range(self.valves.MAX_TOOL_CALLS + 1):
             async with client.messages.stream(**payload) as stream:
-                async for event in stream:
-                    etype = getattr(event, "type", None)
+                try:
+                    async for event in stream:
+                        etype = getattr(event, "type", None)
 
-                    if etype == "text":
-                        # High-level accumulated text event.
-                        chunk = getattr(event, "text", "") or ""
-                        if chunk:
-                            visible_text += chunk
-                            await delta(chunk)
+                        if etype == "text":
+                            # High-level accumulated text event.
+                            chunk = getattr(event, "text", "") or ""
+                            if chunk:
+                                visible_text += chunk
+                                await delta(chunk)
 
-                    elif etype == "citation":
-                        citation = getattr(event, "citation", None)
-                        if citation is not None:
-                            citation_counter += 1
-                            await self._emit_citation(citation, emit, citation_counter)
+                        elif etype == "citation":
+                            citation = getattr(event, "citation", None)
+                            if citation is not None:
+                                citation_counter += 1
+                                await self._emit_citation(
+                                    citation, emit, citation_counter
+                                )
 
-                    elif etype == "content_block_stop":
-                        block = getattr(event, "content_block", None)
-                        btype = getattr(block, "type", None)
-                        if btype == "thinking":
-                            text = getattr(block, "thinking", "") or ""
-                            sig = getattr(block, "signature", "") or ""
-                            if text:
-                                rendered = self._format_thinking_block(text, sig)
-                                await emit_block(rendered)
+                        elif etype == "content_block_stop":
+                            block = getattr(event, "content_block", None)
+                            btype = getattr(block, "type", None)
+                            if btype == "thinking":
+                                text = getattr(block, "thinking", "") or ""
+                                sig = getattr(block, "signature", "") or ""
+                                if text:
+                                    rendered = self._format_thinking_block(text, sig)
+                                    await emit_block(rendered)
+                except ValueError as exc:
+                    # The SDK parses streamed tool_use input JSON incrementally
+                    # (jiter, partial_mode=True). If the model/provider emits
+                    # syntactically invalid JSON (e.g. a dangling
+                    # `"key": ` with no value before the block closes), jiter
+                    # raises ValueError and aborts the async generator. The
+                    # snapshot accumulated so far (all fully-closed content
+                    # blocks, plus whatever partial input the broken block had
+                    # before the failed delta) is still usable, so we log and
+                    # fall through to get_final_message() instead of crashing
+                    # the whole turn.
+                    logger.warning(
+                        "Malformed tool input JSON from stream, using partial "
+                        "snapshot: %s",
+                        exc,
+                    )
 
                 message = await stream.get_final_message()
 
