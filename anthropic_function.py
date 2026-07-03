@@ -34,6 +34,7 @@ import logging
 import re
 import time
 import traceback
+import uuid
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Union
 
@@ -764,7 +765,16 @@ class Pipe:
     def _client_tool_names(self, tools: Optional[dict]) -> set[str]:
         names: set[str] = set()
         for entry in (tools or {}).values():
-            if isinstance(entry, dict) and entry.get("callable") is not None:
+            if not isinstance(entry, dict):
+                continue
+            # Includes both local-callable tools and "direct" tool-server
+            # tools (e.g. Open Terminal's run_command/list_files/etc., which
+            # have no local callable and are executed client-side via
+            # __event_call__ — see _execute_tool/_execute_direct). Without
+            # this, Claude's tool_use blocks for direct tools would be
+            # mistaken for server-side tools (web_search/web_fetch) and
+            # silently dropped instead of dispatched.
+            if entry.get("callable") is not None or entry.get("direct"):
                 spec = entry.get("spec") or {}
                 if spec.get("name"):
                     names.add(spec["name"])
@@ -932,6 +942,51 @@ class Pipe:
     # -----------------------------------------------------------------
     # Tool execution.
     # -----------------------------------------------------------------
+    async def _execute_direct_tool(
+        self,
+        call: dict,
+        entry: dict,
+        event_call: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]],
+        metadata: dict,
+    ) -> tuple[Any, bool]:
+        """Execute an Open WebUI 'direct' tool-server tool (e.g. Open
+        Terminal's run_command/list_files/glob_search/etc.) via the
+        __event_call__ round-trip to the browser, exactly as Open WebUI's own
+        native middleware does for tool.get('direct') == True entries (see
+        utils/middleware.py: tool_call_handler).
+
+        These tools have no local 'callable' — OWUI intentionally executes
+        them client-side (auth/session context lives in the browser),
+        dispatched via a WebSocket 'execute:tool' event that the frontend's
+        executeTool() picks up and forwards to executeToolServer().
+        """
+        name = call["name"]
+        if not callable(event_call):
+            return (
+                f"Error: tool '{name}' is a direct tool-server tool and "
+                "requires __event_call__ (browser round-trip) context, "
+                "which is not available for this request.",
+                True,
+            )
+
+        try:
+            result = await event_call(
+                {
+                    "type": "execute:tool",
+                    "data": {
+                        "id": str(uuid.uuid4()),
+                        "name": name,
+                        "params": call["input"],
+                        "server": entry.get("server", {}),
+                        "session_id": (metadata or {}).get("session_id"),
+                    },
+                }
+            )
+        except Exception as exc:
+            return f"Error executing direct tool '{name}': {exc}", True
+
+        return result, False
+
     async def _execute_tool(
         self,
         call: dict,
@@ -939,12 +994,33 @@ class Pipe:
         request: Any,
         metadata: dict,
         user: dict,
+        event_call: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None,
     ) -> tuple[dict, str, list, list, bool]:
         """Return (result_block, rendered_output, files, embeds, is_error)."""
         name = call["name"]
         entry = (tools or {}).get(name) or {}
         fn = entry.get("callable")
         if fn is None:
+            if entry.get("direct"):
+                result, is_error = await self._execute_direct_tool(
+                    call, entry, event_call, metadata
+                )
+                if isinstance(result, str):
+                    result_str = result
+                else:
+                    try:
+                        result_str = json.dumps(result, ensure_ascii=False, default=str)
+                    except (TypeError, ValueError):
+                        result_str = str(result)
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": call["id"],
+                    "content": result_str,
+                }
+                if is_error:
+                    block["is_error"] = True
+                return block, result_str, [], [], is_error
+
             err = f"Error: tool '{name}' not found"
             block = {
                 "type": "tool_result",
@@ -1126,6 +1202,7 @@ class Pipe:
         body: dict[str, Any],
         __user__: Dict[str, Any],
         __event_emitter__: Callable[[Dict[str, Any]], Awaitable[None]],
+        __event_call__: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None,
         __metadata__: dict[str, Any] = {},
         __tools__: Optional[Dict[str, Dict[str, Any]]] = None,
         __files__: Optional[Dict[str, Any]] = None,
@@ -1209,6 +1286,7 @@ class Pipe:
                 status=status,
                 delta=delta,
                 replace=replace,
+                event_call=__event_call__,
             )
 
             if body.get("stream", False):
@@ -1242,6 +1320,7 @@ class Pipe:
         status: Callable,
         delta: Callable,
         replace: Callable,
+        event_call: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None,
     ) -> str:
         client = self._make_client(api_key)
         visible_text = ""
@@ -1319,7 +1398,9 @@ class Pipe:
 
             # Execute tools (parallel when >1).
             coros = [
-                self._execute_tool(call, tools, request, metadata, user)
+                self._execute_tool(
+                    call, tools, request, metadata, user, event_call=event_call
+                )
                 for call in tool_calls
             ]
             results = (
