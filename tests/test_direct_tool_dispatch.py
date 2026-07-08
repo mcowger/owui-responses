@@ -32,7 +32,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MODULE_PATH = REPO_ROOT / "anthropic_function.py"
+SRC_ROOT = REPO_ROOT / "src"
+sys.path.insert(0, str(SRC_ROOT))
+MODULE_PATH = SRC_ROOT / "owui_manifolds/providers/anthropic/pipe.py"
 
 _spec = importlib.util.spec_from_file_location("anthropic_function", MODULE_PATH)
 anthropic_function = importlib.util.module_from_spec(_spec)

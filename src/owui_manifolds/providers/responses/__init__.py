@@ -1,0 +1,2 @@
+"""OpenAI Responses manifold provider."""
+

@@ -4,15 +4,16 @@
 Reads connection details from .env (copy .env.example and fill in your values).
 
 Usage:
-    python upload.py                              # update responses.py
-    python upload.py gemini                       # update gemini.py (bare name)
-    python upload.py anthropic --create           # create anthropic.py
+    python upload.py                              # update dist/responses.py
+    python upload.py gemini                       # update dist/gemini.py (bare name)
+    python upload.py anthropic --create           # create dist/anthropic_function.py
     python upload.py --file custom.py             # explicit filename
     python upload.py --id my_func_id              # override the function id
 
 The target may be given positionally or via --file, as a bare name
 ("gemini"), a filename ("gemini.py"), or a path. Bare names get ".py"
-appended automatically.
+appended automatically. Provider targets read generated artifacts from dist/;
+context.py is uploaded from the repo root.
 """
 
 import argparse
@@ -90,11 +91,14 @@ def main() -> None:
     if not raw_target.endswith(".py"):
         raw_target = f"{raw_target}.py"
 
-    function_file = SCRIPT_DIR / raw_target
+    if raw_target in DEFAULTS and raw_target != "context.py":
+        function_file = SCRIPT_DIR / "dist" / raw_target
+    else:
+        function_file = SCRIPT_DIR / raw_target
     if not function_file.exists():
         sys.exit(f"Function file not found: {function_file}")
 
-    defaults = DEFAULTS.get(function_file.name, {})
+    defaults = DEFAULTS.get(raw_target, {}) or DEFAULTS.get(function_file.name, {})
     function_id = args.id or defaults.get("id") or function_file.stem
     function_name = args.name or defaults.get("name") or function_file.stem
     description = defaults.get("description") or function_name
@@ -107,8 +111,9 @@ def main() -> None:
     if not api_key:
         sys.exit("OWUI_API_KEY is not set. Copy .env.example to .env and fill in your values.")
 
+    display_file = function_file.relative_to(SCRIPT_DIR)
     content = function_file.read_text(encoding="utf-8")
-    print(f"Read {len(content):,} bytes from {function_file.name}")
+    print(f"Read {len(content):,} bytes from {display_file}")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -128,7 +133,7 @@ def main() -> None:
         url = f"{base_url}/api/v1/functions/id/{function_id}/update"
         action = "Updating"
 
-    print(f"{action} function '{function_id}' from {function_file.name} at {base_url} ...")
+    print(f"{action} function '{function_id}' from {display_file} at {base_url} ...")
     resp = requests.post(url, json=payload, headers=headers, timeout=30)
 
     if resp.ok:

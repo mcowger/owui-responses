@@ -28,17 +28,19 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_ROOT = REPO_ROOT / "src"
+sys.path.insert(0, str(SRC_ROOT))
 
 
 def _load_module(filename: str, module_name: str):
-    spec = importlib.util.spec_from_file_location(module_name, REPO_ROOT / filename)
+    spec = importlib.util.spec_from_file_location(module_name, SRC_ROOT / filename)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
-responses_mod = _load_module("responses.py", "responses_mod_backfill_test")
+responses_mod = _load_module("owui_manifolds/providers/responses/pipe.py", "responses_mod_backfill_test")
 
 
 def _make_buggy_events():

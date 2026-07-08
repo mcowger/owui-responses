@@ -21,15 +21,19 @@ import logging
 import mimetypes
 import os
 import re
-import secrets
 import time
-import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Protocol
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from owui_manifolds.shared.content import strip_details_blocks
+from owui_manifolds.shared.events import OpenWebUIRuntimeEvents
+from owui_manifolds.shared.ids import generate_ulid
+from owui_manifolds.shared.rendering import format_reasoning_details
+from owui_manifolds.shared.tools import candidate_tool_names, dispatch_direct_tool
 
 try:
     from google import genai as _genai_module
@@ -220,8 +224,6 @@ def _get_logger(level_name: str) -> logging.Logger:
     return logger
 
 
-ULID_LENGTH = 16
-CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _DETAILS_BLOCK_RE = re.compile(r"<details\b[^>]*>.*?</details>", re.DOTALL)
 
 
@@ -240,14 +242,6 @@ def _ensure_genai_sdk() -> tuple[Any, Any]:
     genai = imported_genai
     types = imported_types
     return genai, types
-
-
-def generate_ulid() -> str:
-    return "".join(secrets.choice(CROCKFORD_ALPHABET) for _ in range(ULID_LENGTH))
-
-
-def strip_details_blocks(text: str) -> str:
-    return _DETAILS_BLOCK_RE.sub("", text or "")
 
 
 class HistoryStore(Protocol):
@@ -673,55 +667,22 @@ class OpenWebUIToolExecutor:
         return list(await asyncio.gather(*(self._execute_one(call) for call in calls)))
 
     async def _execute_direct(self, call: ToolCall, entry: dict[str, Any]) -> ToolResult:
-        if not callable(self._event_call):
-            error = (
-                f"Tool '{call.name}' is a direct tool-server tool and requires "
-                "__event_call__ (browser round-trip) context, which is not "
-                "available for this request."
-            )
-            return ToolResult(
-                call_id=call.call_id,
-                name=call.name,
-                arguments=call.arguments,
-                output_text=json.dumps({"error": error}, ensure_ascii=False),
-                response_payload={"error": error},
-                status="error",
-                error_message="__event_call__ not available",
-            )
-
-        try:
-            result = await self._event_call(
-                {
-                    "type": "execute:tool",
-                    "data": {
-                        "id": str(uuid.uuid4()),
-                        "name": call.name,
-                        "params": call.arguments,
-                        "server": entry.get("server", {}),
-                        "session_id": self._metadata.get("session_id"),
-                    },
-                }
-            )
-        except Exception as exc:
-            return ToolResult(
-                call_id=call.call_id,
-                name=call.name,
-                arguments=call.arguments,
-                output_text=f"Direct tool error: {exc}",
-                response_payload={"error": str(exc)},
-                status="error",
-                error_message=str(exc),
-            )
-
-        payload = result if isinstance(result, dict) else {"result": result}
-        output_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        shared = await dispatch_direct_tool(
+            name=call.name,
+            arguments=call.arguments,
+            entry=entry,
+            event_call=self._event_call,
+            metadata=self._metadata,
+            call_id=call.call_id,
+        )
         return ToolResult(
             call_id=call.call_id,
             name=call.name,
             arguments=call.arguments,
-            output_text=output_text,
-            response_payload=payload,
-            status="ok",
+            output_text=shared.output_text,
+            response_payload=shared.response_payload,
+            status=shared.status,
+            error_message=shared.error_message,
         )
 
     def _candidate_names(self, name: str) -> list[str]:
@@ -733,13 +694,7 @@ class OpenWebUIToolExecutor:
         name, so try the raw name first, then progressively strip a leading
         ``namespace:`` / ``namespace.`` segment.
         """
-        candidates = [name]
-        for sep in (":", "."):
-            if sep in name:
-                candidates.append(name.rsplit(sep, 1)[-1])
-        # De-duplicate while preserving order.
-        seen: set[str] = set()
-        return [c for c in candidates if c and not (c in seen or seen.add(c))]
+        return candidate_tool_names(name)
 
     def _resolve(self, name: str) -> tuple[Any | None, dict[str, Any] | None]:
         for candidate in self._candidate_names(name):
@@ -797,44 +752,6 @@ class OpenWebUIToolExecutor:
                 status="error",
                 error_message=str(exc),
             )
-
-
-class OpenWebUIRuntimeEvents:
-    def __init__(self, emitter: Any | None):
-        self._emitter = emitter
-
-    async def _emit(self, payload: dict[str, Any]) -> None:
-        if not self._emitter:
-            return
-        if inspect.iscoroutinefunction(self._emitter):
-            await self._emitter(payload)
-            return
-        result = self._emitter(payload)
-        if inspect.isawaitable(result):
-            await result
-
-    async def status(self, description: str, *, done: bool = False, **extra: Any) -> None:
-        await self._emit({"type": "status", "data": {"description": description, "done": done, **extra}})
-
-    async def delta(self, content: str) -> None:
-        await self._emit({"type": "chat:message:delta", "data": {"role": "assistant", "content": content}})
-
-    async def replace(self, content: str) -> None:
-        await self._emit({"type": "chat:message", "data": {"role": "assistant", "content": content}})
-
-    async def notification(
-        self,
-        content: str,
-        *,
-        level: Literal["info", "success", "warning", "error"] = "info",
-    ) -> None:
-        await self._emit({"type": "notification", "data": {"type": level, "content": content}})
-
-    async def chat_completion(self, data: dict[str, Any]) -> None:
-        await self._emit({"type": "chat:completion", "data": data})
-
-    async def source(self, data: dict[str, Any]) -> None:
-        await self._emit({"type": "source", "data": data})
 
 
 def _normalize_model_id(raw_model_id: str, default_model: str) -> str:
@@ -1147,12 +1064,7 @@ class Pipe:
             pending_thoughts.clear()
             if not text:
                 return
-            block = (
-                '<details type="reasoning" done="true">\n'
-                "<summary>Thought</summary>\n"
-                f"{html.escape(text)}\n"
-                "</details>\n"
-            )
+            block = format_reasoning_details(text, summary="Thought")
             visible_blocks.append(block)
             if emit:
                 await events.delta(block)
@@ -1458,4 +1370,3 @@ class Pipe:
 
 
 __all__ = ["Pipe"]
-
