@@ -9,13 +9,12 @@
 mise exec -- uv run python upload.py            # dist/responses.py (default)
 mise exec -- uv run python upload.py gemini     # dist/gemini.py
 mise exec -- uv run python upload.py anthropic  # dist/anthropic_function.py
-mise exec -- uv run python upload.py context    # context.py
+mise exec -- uv run python upload.py context    # dist/context.py
 ```
 
 The target may be a bare name (`gemini`), a filename (`gemini.py`), or a
-path; bare names get `.py` appended. Provider targets upload the generated
-single-file artifacts from `dist/`. `context.py` is still uploaded directly
-from the repo root. This pushes the file to the live Open WebUI instance via
+path; bare names get `.py` appended. Known targets upload the generated
+single-file artifacts from `dist/`. This pushes the file to the live Open WebUI instance via
 `POST /api/v1/functions/id/<function_id>/update`. The function reloads
 immediately — no restart required.
 
@@ -27,7 +26,7 @@ mise exec -- uv run python upload.py anthropic --create
 
 ## Development workflow
 
-1. Edit provider source under `src/owui_manifolds/` (`context.py` remains root-only)
+1. Edit source under `src/owui_manifolds/`
 2. Run `uv run python scripts/build_functions.py`
 3. Commit both source changes and generated `dist/*.py`
 4. Run `mise exec -- uv run python upload.py <target>` to deploy

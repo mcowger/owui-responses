@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bundle modular Open WebUI pipe sources into single-file functions."""
+"""Bundle modular Open WebUI function sources into single-file functions."""
 
 from __future__ import annotations
 
@@ -24,6 +24,11 @@ class Target:
 
 
 TARGETS: dict[str, Target] = {
+    "context": Target(
+        name="context",
+        entry_module="owui_manifolds.filters.context",
+        output=DIST_ROOT / "context.py",
+    ),
     "responses": Target(
         name="responses",
         entry_module="owui_manifolds.providers.responses.pipe",

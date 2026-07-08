@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload a pipe file to Open WebUI as a function.
+"""Upload an Open WebUI function file.
 
 Reads connection details from .env (copy .env.example and fill in your values).
 
@@ -7,13 +7,13 @@ Usage:
     python upload.py                              # update dist/responses.py
     python upload.py gemini                       # update dist/gemini.py (bare name)
     python upload.py anthropic --create           # create dist/anthropic_function.py
+    python upload.py context                      # update dist/context.py
     python upload.py --file custom.py             # explicit filename
     python upload.py --id my_func_id              # override the function id
 
 The target may be given positionally or via --file, as a bare name
 ("gemini"), a filename ("gemini.py"), or a path. Bare names get ".py"
-appended automatically. Provider targets read generated artifacts from dist/;
-context.py is uploaded from the repo root.
+appended automatically. Known targets read generated artifacts from dist/.
 """
 
 import argparse
@@ -69,15 +69,15 @@ ALIASES = {
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Upload an Open WebUI pipe file")
+    parser = argparse.ArgumentParser(description="Upload an Open WebUI function file")
     parser.add_argument("--create", action="store_true", help="Create instead of update")
     parser.add_argument(
         "target",
         nargs="?",
         default=None,
-        help="Pipe to upload: bare name (gemini), filename (gemini.py), or path. Default: responses",
+        help="Function to upload: bare name (gemini), filename (gemini.py), or path. Default: responses",
     )
-    parser.add_argument("--file", default=None, help="Pipe file to upload (alternative to positional target)")
+    parser.add_argument("--file", default=None, help="Function file to upload (alternative to positional target)")
     parser.add_argument("--id", default=None, help="Function id in Open WebUI")
     parser.add_argument("--name", default=None, help="Display name")
     args = parser.parse_args()
@@ -91,7 +91,7 @@ def main() -> None:
     if not raw_target.endswith(".py"):
         raw_target = f"{raw_target}.py"
 
-    if raw_target in DEFAULTS and raw_target != "context.py":
+    if raw_target in DEFAULTS:
         function_file = SCRIPT_DIR / "dist" / raw_target
     else:
         function_file = SCRIPT_DIR / raw_target
