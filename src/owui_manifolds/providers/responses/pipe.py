@@ -527,13 +527,12 @@ See `docs/markers_and_persistence.md` for the v2 marker format.
 """
 
 import re
-import secrets
 from typing import Dict, Iterable, List, TypedDict
 from urllib.parse import parse_qsl, urlencode
 
+from owui_manifolds.shared.ids import CROCKFORD_ALPHABET, ULID_LENGTH, generate_ulid
+
 MARKER_PREFIX = "openai_responses:v2:"
-ULID_LENGTH = 16
-CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 _MARKER_PATTERN = re.compile(r"\[(?P<payload>openai_responses:v2:[^\]]+)\]:\s*#")
 _ITEM_TYPE_PATTERN = re.compile(r"^[a-z0-9_]{2,30}$")
@@ -543,12 +542,6 @@ class ParsedMarker(TypedDict):
     item_type: str
     ulid: str
     metadata: dict[str, str]
-
-
-def generate_ulid() -> str:
-    """Generate a 16-character ULID-style identifier using Crockford Base32."""
-
-    return "".join(secrets.choice(CROCKFORD_ALPHABET) for _ in range(ULID_LENGTH))
 
 
 def _validate_item_type(item_type: str) -> None:
@@ -717,7 +710,29 @@ parse_responses_event = event_to_dict
 def prepare_payload(request: Mapping[str, Any]) -> dict[str, Any]:
     """Return a JSON-ready request dict with ``None`` values removed."""
 
-    return {key: value for key, value in dict(request).items() if value is not None}
+    payload = {key: value for key, value in dict(request).items() if value is not None}
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        payload["tools"] = [_repair_tool_payload_for_openai(tool) for tool in tools]
+    return payload
+
+
+def _repair_tool_payload_for_openai(tool: Any) -> Any:
+    if not isinstance(tool, dict):
+        return tool
+    repaired = deepcopy(tool)
+    if repaired.get("type") == "function":
+        params = repaired.get("parameters")
+        if isinstance(params, dict):
+            repaired["parameters"] = _repair_schema_for_openai(params)
+        function = repaired.get("function")
+        if isinstance(function, dict):
+            fn_params = function.get("parameters")
+            if isinstance(fn_params, dict):
+                function = deepcopy(function)
+                function["parameters"] = _repair_schema_for_openai(fn_params)
+                repaired["function"] = function
+    return repaired
 
 
 __all__ = ["event_to_dict", "parse_responses_event", "prepare_payload"]
@@ -1270,6 +1285,90 @@ def _make_nullable(type_value: object) -> object:
     return type_value
 
 
+def _append_null_variant(variants: list) -> list:
+    if any(isinstance(variant, dict) and variant.get("type") == "null" for variant in variants):
+        return variants
+    return [*variants, {"type": "null"}]
+
+
+def _infer_schema_type(schema: dict, property_name: str | None = None) -> str | None:
+    """Infer an omitted JSON Schema type from validation keywords.
+
+    Some Open WebUI tool-server schemas arrive with constrained ``anyOf``
+    branches such as ``{"minimum": 1}``. OpenAI rejects those branches because
+    each branch must declare a type. We infer only where the schema already
+    carries type-specific keywords.
+    """
+
+    if "properties" in schema or "additionalProperties" in schema:
+        return "object"
+    if "items" in schema:
+        return "array"
+    if any(key in schema for key in ("minLength", "maxLength", "pattern", "format")):
+        return "string"
+    name = (property_name or "").lower()
+    description = str(schema.get("description") or "").lower()
+    if any(
+        key in schema
+        for key in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")
+    ):
+        if any(
+            token in name
+            for token in ("line", "count", "index", "offset", "limit", "size", "length")
+        ):
+            return "integer"
+        return "number"
+    if any(
+        token in name
+        for token in ("line", "count", "index", "offset", "limit", "size", "length", "tail")
+    ):
+        return "integer"
+    if name in {
+        "include",
+        "exclude",
+        "pattern",
+        "query",
+        "path",
+        "directory",
+        "file",
+        "glob",
+        "type",
+    }:
+        return "string"
+    if name == "wait" or "seconds to wait" in description:
+        return "number"
+    if "last n " in description or "line number" in description or "1-indexed" in description:
+        return "integer"
+    if "glob pattern" in description or "type filter" in description:
+        return "string"
+
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        non_null = [value for value in enum if value is not None]
+        if non_null and all(isinstance(value, bool) for value in non_null):
+            return "boolean"
+        if non_null and all(isinstance(value, int) and not isinstance(value, bool) for value in non_null):
+            return "integer"
+        if non_null and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in non_null):
+            return "number"
+        if non_null and all(isinstance(value, str) for value in non_null):
+            return "string"
+
+    const = schema.get("const")
+    if isinstance(const, bool):
+        return "boolean"
+    if isinstance(const, int) and not isinstance(const, bool):
+        return "integer"
+    if isinstance(const, float):
+        return "number"
+    if isinstance(const, str):
+        return "string"
+    if const is None and "const" in schema:
+        return "null"
+
+    return None
+
+
 # Keywords that are valid JSON Schema but are not permitted by OpenAI's
 # strict function-calling subset.  If any of these appear anywhere in a
 # tool's parameter schema we must NOT enable strict mode for that tool.
@@ -1301,16 +1400,22 @@ def _schema_is_strict_compatible(schema: object) -> bool:
     return True
 
 
-def _strictify_schema(schema: dict) -> dict:
+def _strictify_schema(schema: dict, property_name: str | None = None) -> dict:
     """Recursively enforce strict JSON Schema semantics for objects."""
 
     schema = _ensure_object_schema(schema)
+    if "type" not in schema:
+        inferred_type = _infer_schema_type(schema, property_name)
+        if inferred_type is not None:
+            schema["type"] = inferred_type
 
     for combiner in ("anyOf", "oneOf", "allOf"):
         variants = schema.get(combiner)
         if isinstance(variants, list):
             schema[combiner] = [
-                _strictify_schema(variant) if isinstance(variant, dict) else variant
+                _strictify_schema(variant, property_name=property_name)
+                if isinstance(variant, dict)
+                else variant
                 for variant in variants
             ]
 
@@ -1326,15 +1431,15 @@ def _strictify_schema(schema: dict) -> dict:
         strict_props: dict[str, dict] = {}
         required: list[str] = []
         for prop_name, prop_schema in properties.items():
-            strict_prop = _strictify_schema(prop_schema)
+            strict_prop = _strictify_schema(prop_schema, property_name=prop_name)
             if prop_name not in original_required:
                 current_type = strict_prop.get("type")
                 if current_type is not None:
                     strict_prop["type"] = _make_nullable(current_type)
                 elif isinstance(strict_prop.get("anyOf"), list):
-                    strict_prop["anyOf"] = [*strict_prop["anyOf"], {"type": "null"}]
+                    strict_prop["anyOf"] = _append_null_variant(strict_prop["anyOf"])
                 elif isinstance(strict_prop.get("oneOf"), list):
-                    strict_prop["oneOf"] = [*strict_prop["oneOf"], {"type": "null"}]
+                    strict_prop["oneOf"] = _append_null_variant(strict_prop["oneOf"])
                 else:
                     strict_prop = {"anyOf": [strict_prop, {"type": "null"}]}
             strict_props[prop_name] = strict_prop
@@ -1346,9 +1451,60 @@ def _strictify_schema(schema: dict) -> dict:
 
     items = schema.get("items")
     if isinstance(items, dict):
-        schema["items"] = _strictify_schema(items)
+        schema["items"] = _strictify_schema(items, property_name=property_name)
 
     return schema
+
+
+def _repair_schema_for_openai(schema: object, property_name: str | None = None) -> object:
+    """Repair schemas that OpenAI rejects even outside strict mode.
+
+    Open Terminal/direct tool-server integrations can provide optional numeric
+    parameters as ``anyOf: [{"minimum": 1}, {"type": "null"}]``. That is not
+    accepted by the OpenAI Responses API because constrained branches still
+    need a concrete ``type``. This lighter repair runs before optional strict
+    conversion so it applies regardless of the strict valve.
+    """
+
+    if isinstance(schema, list):
+        return [
+            _repair_schema_for_openai(item, property_name=property_name)
+            for item in schema
+        ]
+    if not isinstance(schema, dict):
+        return schema
+
+    repaired = deepcopy(schema)
+    if "type" not in repaired:
+        inferred_type = _infer_schema_type(repaired, property_name)
+        if inferred_type is not None:
+            repaired["type"] = inferred_type
+
+    for combiner in ("anyOf", "oneOf", "allOf"):
+        variants = repaired.get(combiner)
+        if isinstance(variants, list):
+            repaired[combiner] = [
+                _repair_schema_for_openai(variant, property_name=property_name)
+                for variant in variants
+            ]
+
+    properties = repaired.get("properties")
+    if isinstance(properties, dict):
+        repaired["properties"] = {
+            prop_name: _repair_schema_for_openai(prop_schema, property_name=prop_name)
+            for prop_name, prop_schema in properties.items()
+        }
+
+    items = repaired.get("items")
+    if isinstance(items, dict):
+        repaired["items"] = _repair_schema_for_openai(items, property_name=property_name)
+    elif isinstance(items, list):
+        repaired["items"] = [
+            _repair_schema_for_openai(item, property_name=property_name)
+            for item in items
+        ]
+
+    return repaired
 
 
 class FunctionTool(BaseModel):
@@ -1516,8 +1672,10 @@ class ToolPolicy:
         for raw_tool in ordered_tools:
             tool_type = raw_tool.get("type")
             tool = deepcopy(raw_tool)
+            if tool_type == "function":
+                params = _repair_schema_for_openai(tool.get("parameters") or {})
+                tool["parameters"] = params
             if tool_type == "function" and cfg.ENABLE_STRICT_TOOL_CALLING:
-                params = tool.get("parameters") or {}
                 if _schema_is_strict_compatible(params):
                     tool["parameters"] = _strictify_schema(params)
                     tool["strict"] = True
@@ -3004,8 +3162,9 @@ __all__ = ["OpenWebUIRuntimeEvents"]
 import asyncio
 import inspect
 import json
-import uuid
 from typing import Any, Iterable
+
+from owui_manifolds.shared.tools import dispatch_direct_tool
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.domain.tools import ToolDefinition, ToolExecutor, ToolRegistry
@@ -3109,49 +3268,19 @@ class OpenWebUIToolExecutor(ToolExecutor):
         return list(await asyncio.gather(*(self._execute_one(call) for call in calls)))
 
     async def _execute_direct(self, call: ToolCall, entry: dict[str, Any], args: dict) -> ToolResult:
-        if not callable(self._event_call):
-            return ToolResult(
-                call_id=call.call_id,
-                output=json.dumps(
-                    {
-                        "error": (
-                            f"Tool '{call.name}' is a direct tool-server tool and requires "
-                            "__event_call__ (browser round-trip) context, which is not "
-                            "available for this request."
-                        )
-                    }
-                ),
-                status="error",
-                error_message="__event_call__ not available",
-            )
-
-        try:
-            result = await self._event_call(
-                {
-                    "type": "execute:tool",
-                    "data": {
-                        "id": str(uuid.uuid4()),
-                        "name": call.name,
-                        "params": args,
-                        "server": entry.get("server", {}),
-                        "session_id": self._metadata.get("session_id"),
-                    },
-                }
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            return ToolResult(
-                call_id=call.call_id,
-                output=f"Direct tool error: {exc}",
-                status="error",
-                error_message=str(exc),
-            )
-
-        output = result if isinstance(result, str) else json.dumps(result, default=str)
+        shared = await dispatch_direct_tool(
+            name=call.name,
+            arguments=args,
+            entry=entry,
+            event_call=self._event_call,
+            metadata=self._metadata,
+            call_id=call.call_id,
+        )
         return ToolResult(
             call_id=call.call_id,
-            output=output,
-            status="ok",
-            error_message=None,
+            output=shared.output_text,
+            status=shared.status,
+            error_message=shared.error_message,
         )
 
     async def _execute_one(self, call: ToolCall) -> ToolResult:

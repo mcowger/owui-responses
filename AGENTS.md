@@ -6,44 +6,75 @@
 ### Upload / update
 
 ```bash
-uv run python upload.py            # responses (default)
-uv run python upload.py gemini     # gemini.py
-uv run python upload.py anthropic  # anthropic_function.py
-uv run python upload.py context    # context.py
+mise exec -- uv run python upload.py            # dist/responses.py (default)
+mise exec -- uv run python upload.py gemini     # dist/gemini.py
+mise exec -- uv run python upload.py anthropic  # dist/anthropic_function.py
+mise exec -- uv run python upload.py context    # context.py
 ```
 
 The target may be a bare name (`gemini`), a filename (`gemini.py`), or a
-path; bare names get `.py` appended. This pushes the file to the live
-Open WebUI instance via `POST /api/v1/functions/id/<function_id>/update`.
-The function reloads immediately — no restart required.
+path; bare names get `.py` appended. Provider targets upload the generated
+single-file artifacts from `dist/`. `context.py` is still uploaded directly
+from the repo root. This pushes the file to the live Open WebUI instance via
+`POST /api/v1/functions/id/<function_id>/update`. The function reloads
+immediately — no restart required.
 
 ### First-time create (if the function doesn't exist yet)
 
 ```bash
-uv run python upload.py anthropic --create
+mise exec -- uv run python upload.py anthropic --create
 ```
 
 ## Development workflow
 
-1. Edit the pipe file (`responses.py`, `gemini.py`, `anthropic_function.py`, or `context.py`)
-2. Commit your changes
-3. Run `uv run python upload.py <target>` to deploy
+1. Edit provider source under `src/owui_manifolds/` (`context.py` remains root-only)
+2. Run `uv run python scripts/build_functions.py`
+3. Commit both source changes and generated `dist/*.py`
+4. Run `mise exec -- uv run python upload.py <target>` to deploy
+
+Use `uv run python scripts/build_functions.py --check` in tests/CI to ensure
+committed `dist/` artifacts match the modular source.
+
+## Environment and live-system safety
+
+Use `mise exec -- <command>` for any command that needs Open WebUI credentials
+or live instance configuration. Do not rely on `source .env`,
+`python-dotenv`, or `dotenv_values()` in verification scripts; this repo's
+working environment is provided by mise, and `.env` may be absent, incomplete,
+or intentionally different from the active shell environment.
+
+Examples:
+
+```bash
+mise exec -- uv run python upload.py responses
+mise exec -- bash -lc 'BASE="${OWUI_URL%/}"; curl -s "$BASE/api/models?refresh=true" -H "Authorization: Bearer $OWUI_API_KEY"'
+```
+
+Do not run live chat completions, mutate existing chats, upload functions, or
+trigger provider requests unless the user has explicitly asked for that live
+operation in the current task. Read-only inspection of a user-provided chat ID
+is acceptable when debugging an error, but new completions and uploads affect
+the live system and should be called out before running.
+
+When a live verification is approved, prefer creating a new chat unless the
+user specifically asks to test in an existing chat. If you must use an existing
+chat, state the chat ID and what will be posted before sending the request.
 
 ## Reviewing a conversation for errors
 
 Use the Open WebUI API to fetch a chat by ID and inspect its message history,
-status history, and error logs.  You'll need to execute using 'mise exec -- <command>' to get the appropriate environment variables.
+status history, and error logs. You'll need to execute using
+`mise exec -- <command>` to get the appropriate environment variables.
 
 Always retrieve chats in two separate steps — download to a file first, then
 analyze that file. Never pipe the response directly into `python`/`json.tool`;
 it's inefficient and discards the raw data.
 
 ```bash
-CHAT_ID=282df76e-c702-4768-9351-b7ae11b219be
+export CHAT_ID=282df76e-c702-4768-9351-b7ae11b219be
 
 # 1. Download to a file
-mise exec -- curl -s "https://owui.home.cowger.us/api/v1/chats/$CHAT_ID" \
-  -H "Authorization: Bearer $OWUI_API_KEY" -o /tmp/chat_$CHAT_ID.json
+mise exec -- bash -lc 'BASE="${OWUI_URL%/}"; curl -s "$BASE/api/v1/chats/$CHAT_ID" -H "Authorization: Bearer $OWUI_API_KEY" -o "/tmp/chat_$CHAT_ID.json"'
 
 # 2. Analyze the file
 python3 -m json.tool /tmp/chat_$CHAT_ID.json
@@ -65,20 +96,19 @@ array of the assistant message under `source.name = "Error Logs"`.
 ## Verifying a pipe end-to-end in Open WebUI
 
 Do not stop at local syntax/import checks when changing a pipe. For Open WebUI
-manifolds, verify the live behavior through the Open WebUI API.
+manifolds, verify the live behavior through the Open WebUI API after the user
+approves live verification.
 
 Recommended workflow:
 
 1. **Upload the updated function**
    ```bash
-   uv run python upload.py --file gemini.py --id google_gemini_manifold
+   mise exec -- uv run python upload.py gemini --id google_gemini_manifold
    ```
 
 2. **Confirm the manifold models are registered**
    ```bash
-   source .env
-   curl -s "$OWUI_URL/api/models?refresh=true" \
-     -H "Authorization: Bearer $OWUI_API_KEY" | python3 -m json.tool
+   mise exec -- bash -lc 'BASE="${OWUI_URL%/}"; curl -s "$BASE/api/models?refresh=true" -H "Authorization: Bearer $OWUI_API_KEY"' | python3 -m json.tool
    ```
 
    Check that the expected model IDs appear in `data[]`, e.g.
@@ -91,14 +121,15 @@ Recommended workflow:
 
    Minimal pattern:
    ```bash
-   source .env
-   uv run python - <<'PY'
-   import time, uuid, requests
-   from dotenv import dotenv_values
+   mise exec -- uv run python - <<'PY'
+   import os
+   import time
+   import uuid
 
-   cfg = dotenv_values('.env')
-   base = cfg['OWUI_URL'].rstrip('/')
-   key = cfg['OWUI_API_KEY']
+   import requests
+
+   base = os.environ['OWUI_URL'].rstrip('/')
+   key = os.environ['OWUI_API_KEY']
    headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
 
    model = 'google_gemini_manifold.gemini-3.5-flash'
@@ -129,6 +160,14 @@ Recommended workflow:
    print(requests.post(f'{base}/api/chat/completions', headers=headers, json=payload, timeout=120).text)
    PY
    ```
+
+   Synthetic requests must match the real UI/Open WebUI request shape closely
+   enough to exercise the bug being tested. Include the same `model`, `stream`
+   mode, `chat_id`, `id`, `user_message`, `parent_id`, `messages`, tools, and
+   provider-specific options that were present in the failing request. If the
+   failure came from a proxy log or stored chat, save that raw request/response
+   as a fixture and write the regression test against it. Do not treat a
+   smaller hand-written payload as proof unless it preserves the failing shape.
 
 4. **Read back the stored chat message**
    Fetch the chat via `/api/v1/chats/<chat_id>` and inspect the persisted

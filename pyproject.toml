@@ -14,6 +14,6 @@ dependencies = [
 dev = [
     "black>=26.5.1",
     "python-dotenv>=1.0",
+    "pytest>=8.0",
     "requests>=2.32",
 ]
-
