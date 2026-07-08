@@ -1600,7 +1600,12 @@ def _append_null_variant(variants: list) -> list:
     return [*variants, {"type": "null"}]
 
 
-def _infer_schema_type(schema: dict, property_name: str | None = None) -> str | None:
+def _infer_schema_type(
+    schema: dict,
+    property_name: str | None = None,
+    *,
+    allow_semantic_inference: bool = False,
+) -> str | None:
     """Infer an omitted JSON Schema type from validation keywords.
 
     Some Open WebUI tool-server schemas arrive with constrained ``anyOf``
@@ -1627,29 +1632,6 @@ def _infer_schema_type(schema: dict, property_name: str | None = None) -> str | 
         ):
             return "integer"
         return "number"
-    if any(
-        token in name
-        for token in ("line", "count", "index", "offset", "limit", "size", "length", "tail")
-    ):
-        return "integer"
-    if name in {
-        "include",
-        "exclude",
-        "pattern",
-        "query",
-        "path",
-        "directory",
-        "file",
-        "glob",
-        "type",
-    }:
-        return "string"
-    if name == "wait" or "seconds to wait" in description:
-        return "number"
-    if "last n " in description or "line number" in description or "1-indexed" in description:
-        return "integer"
-    if "glob pattern" in description or "type filter" in description:
-        return "string"
 
     enum = schema.get("enum")
     if isinstance(enum, list) and enum:
@@ -1674,6 +1656,32 @@ def _infer_schema_type(schema: dict, property_name: str | None = None) -> str | 
         return "string"
     if const is None and "const" in schema:
         return "null"
+
+    if not allow_semantic_inference:
+        return None
+    if any(
+        token in name
+        for token in ("line", "count", "index", "offset", "limit", "size", "length", "tail")
+    ):
+        return "integer"
+    if name in {
+        "include",
+        "exclude",
+        "pattern",
+        "query",
+        "path",
+        "directory",
+        "file",
+        "glob",
+        "type",
+    }:
+        return "string"
+    if name == "wait" or "seconds to wait" in description:
+        return "number"
+    if "last n " in description or "line number" in description or "1-indexed" in description:
+        return "integer"
+    if "glob pattern" in description or "type filter" in description:
+        return "string"
 
     return None
 
@@ -1807,7 +1815,12 @@ def _strictify_schema(schema: dict, property_name: str | None = None) -> dict:
     return schema
 
 
-def _repair_schema_for_openai(schema: object, property_name: str | None = None) -> object:
+def _repair_schema_for_openai(
+    schema: object,
+    property_name: str | None = None,
+    *,
+    allow_semantic_inference: bool = False,
+) -> object:
     """Repair schemas that OpenAI rejects even outside strict mode.
 
     Open Terminal/direct tool-server integrations can provide optional numeric
@@ -1827,7 +1840,11 @@ def _repair_schema_for_openai(schema: object, property_name: str | None = None) 
 
     repaired = deepcopy(schema)
     if "type" not in repaired:
-        inferred_type = _infer_schema_type(repaired, property_name)
+        inferred_type = _infer_schema_type(
+            repaired,
+            property_name,
+            allow_semantic_inference=allow_semantic_inference,
+        )
         if inferred_type is not None:
             repaired["type"] = inferred_type
 
@@ -1835,7 +1852,11 @@ def _repair_schema_for_openai(schema: object, property_name: str | None = None) 
         variants = repaired.get(combiner)
         if isinstance(variants, list):
             repaired[combiner] = [
-                _repair_schema_for_openai(variant, property_name=property_name)
+                _repair_schema_for_openai(
+                    variant,
+                    property_name=property_name,
+                    allow_semantic_inference=True,
+                )
                 for variant in variants
             ]
 
@@ -2024,10 +2045,12 @@ class ToolPolicy:
             tool_type = raw_tool.get("type")
             tool = deepcopy(raw_tool)
             if tool_type == "function":
-                params = _repair_schema_for_openai(tool.get("parameters") or {})
+                raw_params = tool.get("parameters") or {}
+                strict_compatible = _schema_is_strict_compatible(raw_params)
+                params = _repair_schema_for_openai(raw_params)
                 tool["parameters"] = params
             if tool_type == "function" and cfg.ENABLE_STRICT_TOOL_CALLING:
-                if _schema_is_strict_compatible(params):
+                if strict_compatible:
                     tool["parameters"] = _strictify_schema(params)
                     tool["strict"] = True
                 else:
