@@ -2681,6 +2681,13 @@ async def _emit_server_tool_status(
 class ResponsesEngine:
     """Orchestrate a single streaming turn against the Responses API."""
 
+    _TERMINAL_RESPONSE_EVENTS = {
+        "response.completed",
+        "response.failed",
+        "response.incomplete",
+        "response.error",
+    }
+
     def __init__(
         self,
         client: OpenAIClient,
@@ -2937,7 +2944,7 @@ class ResponsesEngine:
             request, base_url=base_url, api_key=api_key, max_retries=ctx.runtime_config.MAX_RETRIES
         ):
             response_payload = await self._handle_event(event, state, events, ctx)
-            if event.get("type") in {"response.failed", "response.incomplete"}:
+            if event.get("type") in self._TERMINAL_RESPONSE_EVENTS:
                 break
         # Defensive backfill: a conformant Responses API returns the complete
         # list of output items in the terminal response.completed snapshot.

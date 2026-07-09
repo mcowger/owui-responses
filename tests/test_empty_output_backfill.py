@@ -223,6 +223,52 @@ def test_backfills_output_and_executes_tool_when_completed_output_empty():
     assert "done" in (result.text or "")
 
 
+def test_completed_event_terminates_stream_without_waiting_for_eof():
+    """Some upstream proxies deliver response.completed but leave the stream
+    transport open. The engine should treat the terminal event as sufficient
+    and finish the turn instead of waiting forever for iterator EOF."""
+    ResponsesEngine = responses_mod.ResponsesEngine
+    HistoryManager = responses_mod.HistoryManager
+    parse = responses_mod.parse_responses_event
+
+    class _NoStore:
+        def load_items(self, **kw):
+            return {}
+
+        def save_items(self, **kw):
+            return []
+
+    msg_item = {
+        "type": "message",
+        "id": "msg_done",
+        "content": [{"type": "output_text", "text": "done"}],
+    }
+
+    class _HangingAfterCompletedClient:
+        async def stream_responses(self, request, *, base_url, api_key, max_retries=3):
+            yield parse({"type": "response.output_item.added", "output_index": 0, "item": msg_item})
+            yield parse({"type": "response.output_text.delta", "output_index": 0, "delta": "done"})
+            yield parse({"type": "response.output_item.done", "output_index": 0, "item": msg_item})
+            yield parse({"type": "response.completed", "response": {"output": [msg_item], "usage": {}}})
+            await asyncio.Event().wait()
+
+        async def create_response(self, request, *, base_url, api_key, max_retries=3):
+            return {}
+
+    async def run():
+        engine = ResponsesEngine(_HangingAfterCompletedClient(), HistoryManager(_NoStore()))
+        return await engine.run_streaming_turn(
+            request={"model": "gpt-5.1", "input": [], "stream": True},
+            ctx=_build_ctx(responses_mod.PipeValves()),
+            events=_CollectingEvents(),
+            history_key={"chat_id": None, "pipe_id": "openai_responses"},
+            tool_executor=_RecordingExecutor(),
+        )
+
+    result = asyncio.run(asyncio.wait_for(run(), timeout=1))
+    assert "done" in (result.text or "")
+
+
 def test_successful_turn_logs_are_not_emitted_as_visible_citations():
     session_id = "success-log-session"
     responses_mod.clear_session_logs(session_id)
