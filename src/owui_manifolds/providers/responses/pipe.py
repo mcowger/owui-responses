@@ -252,6 +252,7 @@ formatting, context propagation, and in-memory log buffering. See
 """
 import logging
 import sys
+import traceback
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -3633,6 +3634,83 @@ class Pipe:
         except Exception:
             get_logger(__name__).debug("Failed to persist citations to Open WebUI chat", exc_info=True)
 
+    async def _emit_turn_diagnostics(
+        self,
+        *,
+        events: "OpenWebUIRuntimeEvents",
+        metadata: dict[str, Any] | None,
+        session_id: str | None,
+        phase: str,
+        exc: BaseException | None = None,
+    ) -> None:
+        """Defensively persist our own turn outcome, independent of OWUI's middleware.
+
+        Open WebUI's tool-calling loop (utils/middleware.py) reinvokes this pipe
+        once per tool round and can silently `break` out of that loop on an
+        exception logged only at DEBUG level, leaving the assistant message
+        untouched (no error, no done=True) if a later step never runs. `status`
+        and `citation`/`source` events are persisted to the chat message
+        synchronously by Open WebUI's event emitter, independent of whatever the
+        middleware does afterwards -- so emitting them here, directly from the
+        pipe, guarantees a durable trace of what actually happened on our side
+        even if Open WebUI never finalizes the message.
+        """
+        metadata = metadata or {}
+        chat_id = metadata.get("chat_id")
+        message_id = metadata.get("message_id")
+
+        if exc is not None:
+            self.engine._logger.error(
+                "responses-manifold turn failed phase=%s chat_id=%s message_id=%s",
+                phase,
+                chat_id,
+                message_id,
+                exc_info=exc,
+            )
+        else:
+            self.engine._logger.info(
+                "responses-manifold turn finished phase=%s chat_id=%s message_id=%s",
+                phase,
+                chat_id,
+                message_id,
+            )
+
+        if not chat_id or not message_id:
+            return
+
+        try:
+            if exc is not None:
+                await events.status(
+                    f"responses-manifold: turn failed ({type(exc).__name__})",
+                    done=True,
+                )
+                tb_text = "".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                )
+                log_lines = consume_session_logs(session_id)
+                document_parts = [f"Exception:\n{tb_text}"]
+                if log_lines:
+                    document_parts.append("Recent manifold logs:\n" + "\n".join(log_lines))
+                await events.citation(
+                    {
+                        "document": document_parts,
+                        "metadata": [
+                            {
+                                "source": "Responses Manifold Error",
+                                "phase": phase,
+                                "exception_type": type(exc).__name__,
+                            }
+                        ],
+                        "source": {"name": "Responses Manifold Error"},
+                    }
+                )
+            else:
+                await events.status(f"responses-manifold: turn completed ({phase})", done=True)
+        except Exception:
+            self.engine._logger.debug(
+                "Failed to emit defensive turn diagnostics", exc_info=True
+            )
+
     async def pipe(
         self,
         body: dict[str, Any] | None = None,
@@ -3698,19 +3776,42 @@ class Pipe:
                 await events.chat_completion({"done": True, "error": "Streaming required"})
                 return ""
 
-            request, base_tools, extra_tools = map_completions_to_responses(
-                body=body, ctx=ctx, history_manager=self.history_manager, history_key=history_key
-            )
+            session_id = (__metadata__ or {}).get("session_id")
 
-            self._build_tools_for_request(
-                request=request,
-                ctx=ctx,
-                cfg=cfg,
-                registry=registry,
-                base_tools=base_tools,
-                extra_tools=extra_tools,
-            )
-            self._apply_request_config(request, cfg, ctx)
+            try:
+                request, base_tools, extra_tools = map_completions_to_responses(
+                    body=body, ctx=ctx, history_manager=self.history_manager, history_key=history_key
+                )
+
+                self._build_tools_for_request(
+                    request=request,
+                    ctx=ctx,
+                    cfg=cfg,
+                    registry=registry,
+                    base_tools=base_tools,
+                    extra_tools=extra_tools,
+                )
+                self._apply_request_config(request, cfg, ctx)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._emit_turn_diagnostics(
+                    events=events,
+                    metadata=__metadata__,
+                    session_id=session_id,
+                    phase="request-setup",
+                    exc=exc,
+                )
+
+                async def _failed_setup() -> AsyncIterator[dict[str, Any]]:
+                    yield {
+                        "type": "response.failed",
+                        "response": {
+                            "error": {"type": type(exc).__name__, "message": str(exc)}
+                        },
+                    }
+
+                return _failed_setup()
 
             async def _stream_one_response() -> AsyncIterator[dict[str, Any]]:
                 try:
@@ -3720,6 +3821,13 @@ class Pipe:
                     raise
                 except Exception as exc:
                     self.engine._logger.exception("Responses API stream failed")
+                    await self._emit_turn_diagnostics(
+                        events=events,
+                        metadata=__metadata__,
+                        session_id=session_id,
+                        phase="stream",
+                        exc=exc,
+                    )
                     yield {
                         "type": "response.failed",
                         "response": {
@@ -3729,6 +3837,14 @@ class Pipe:
                             }
                         },
                     }
+                    return
+                await self._emit_turn_diagnostics(
+                    events=events,
+                    metadata=__metadata__,
+                    session_id=session_id,
+                    phase="stream",
+                    exc=None,
+                )
 
             return _stream_one_response()
 
