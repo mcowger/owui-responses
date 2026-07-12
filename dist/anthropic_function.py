@@ -158,18 +158,20 @@ class ModelMatcher:
 
     def match_model(self, model_name: str, table_text: str) -> Dict[str, Any]:
         model_lower = (model_name or "").lower().strip()
-        # Pipe/manifold ids look like "<pipe_id>.<provider>/<model>"; the bare
-        # upstream model name is always everything after the last "/", so slicing
-        # there alone is sufficient. (Deliberately *not* also splitting on "."
-        # first - that would mangle plain versioned names with no pipe prefix at
-        # all, like "gpt-5.4-mini" or "glm-5.2-flash".)
+        # Pipe/manifold ids may use either "<pipe_id>.<model>" or
+        # "<pipe_id>.<provider>/<model>". Retain the original value as a
+        # candidate so bare versioned names such as "gpt-5.4-mini" are not
+        # mangled when also considering a dot-separated manifold suffix.
         model_lower = model_lower.rsplit("/", 1)[-1]
+        manifold_suffix = model_lower.split(".", 1)[-1]
 
         if model_lower:
             for pattern, limit, cap_percent, warning_percent in self.parse_table(
                 table_text
             ):
-                if fnmatch.fnmatchcase(model_lower, pattern):
+                if fnmatch.fnmatchcase(model_lower, pattern) or fnmatch.fnmatchcase(
+                    manifold_suffix, pattern
+                ):
                     return {
                         "limit": limit,
                         "cap_percent": cap_percent,
@@ -1208,10 +1210,17 @@ class ContextWindowMixin:
                 },
             )
 
+        effective_recent_n = recent_n
+        if force:
+            units = atomic_message_units(history_messages)
+            effective_recent_n = (
+                n - units[-1][0] if preserve_latest_unit and units else 0
+            )
+
         anchor_n, recent_start = tool_safe_window_boundaries(
             history_messages,
             anchor_count=anchor_n,
-            recent_count=recent_n,
+            recent_count=effective_recent_n,
         )
         covered_upto = max(anchor_n, min(covered_upto, recent_start))
         covered_upto = max(

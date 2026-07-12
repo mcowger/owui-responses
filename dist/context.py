@@ -1197,10 +1197,17 @@ class ContextWindowMixin:
                 },
             )
 
+        effective_recent_n = recent_n
+        if force:
+            units = atomic_message_units(history_messages)
+            effective_recent_n = (
+                n - units[-1][0] if preserve_latest_unit and units else 0
+            )
+
         anchor_n, recent_start = tool_safe_window_boundaries(
             history_messages,
             anchor_count=anchor_n,
-            recent_count=recent_n,
+            recent_count=effective_recent_n,
         )
         covered_upto = max(anchor_n, min(covered_upto, recent_start))
         covered_upto = max(
