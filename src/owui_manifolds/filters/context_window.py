@@ -2,6 +2,7 @@
 
 from typing import Any, Callable, Dict, List, Tuple
 
+from owui_manifolds.filters.context_status import emit_status_durable
 from owui_manifolds.filters.context_tooling import (
     atomic_message_units,
     tool_safe_window_boundaries,
@@ -45,6 +46,9 @@ class ContextWindowMixin:
         blocks: List[Dict[str, str]],
         force: bool = False,
         preserve_latest_unit: bool = True,
+        event_emitter: Callable | None = None,
+        chat_id: str | None = None,
+        message_id: str | None = None,
     ) -> Tuple[List[dict], int, List[Dict[str, str]], Dict[str, Any]]:
         """Assemble anchor + persisted summary blocks + verbatim "pending" middle +
         recent messages, and compare THAT candidate to budget - not the raw
@@ -131,6 +135,12 @@ class ContextWindowMixin:
                     64,
                     min(fold_ceiling, max(64, budget - base_tokens)),
                 )
+                await emit_status_durable(
+                    event_emitter,
+                    chat_id,
+                    message_id,
+                    "Summarizing conversation…",
+                )
                 merged = await self.generate_overflow_summary(
                     oldest_two_messages,
                     target_tokens=block_target,
@@ -168,6 +178,12 @@ class ContextWindowMixin:
                 summary_target = max(
                     64,
                     min(fold_ceiling, max(64, budget - base_tokens)),
+                )
+                await emit_status_durable(
+                    event_emitter,
+                    chat_id,
+                    message_id,
+                    "Summarizing conversation…",
                 )
                 summary_text = await self.generate_overflow_summary(
                     excluded,

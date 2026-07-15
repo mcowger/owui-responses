@@ -7,6 +7,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from typing import Any, Dict, List, Tuple
 
+from owui_manifolds.filters.context_status import emit_status_durable
 from owui_manifolds.shared.content import strip_details_blocks
 
 _TOOL_SUMMARY_PREFIX = "[Semantically compacted tool result"
@@ -141,6 +142,9 @@ class ContextToolCompactionMixin:
         messages: List[dict],
         budget: int,
         persisted_cache: Dict[str, str] | None = None,
+        event_emitter: Any = None,
+        chat_id: str | None = None,
+        message_id: str | None = None,
     ) -> tuple[List[dict], Dict[str, str], Dict[str, Any]]:
         """Semantically reduce tool messages only when the candidate is over budget.
 
@@ -195,6 +199,12 @@ class ContextToolCompactionMixin:
             key = _cache_key(message, content, target_tokens)
             summary = cache.get(key) or _TOOL_SUMMARY_CACHE.get(key)
             if not summary:
+                await emit_status_durable(
+                    event_emitter,
+                    chat_id,
+                    message_id,
+                    f"Compacting tool result ({message.get('name') or 'tool'})…",
+                )
                 summary = await self.generate_tool_result_summary(
                     message,
                     target_tokens=target_tokens,

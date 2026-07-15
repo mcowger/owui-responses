@@ -101,6 +101,74 @@ def mark_context_prepared(
     }
     return body
 
+# === owui_manifolds/filters/context_status.py ===
+import asyncio
+from typing import Any, Optional
+
+
+async def emit_status(event_emitter: Any, description: str, done: bool = False) -> None:
+    if not event_emitter:
+        return
+    try:
+        await event_emitter(
+            {"type": "status", "data": {"description": description, "done": done}}
+        )
+    except Exception:
+        pass
+
+
+async def emit_status_durable(
+    event_emitter: Any,
+    chat_id: Optional[str],
+    message_id: Optional[str],
+    description: str,
+    done: bool = False,
+    attempts: int = 5,
+    retry_delay: float = 0.05,
+) -> None:
+    """Emit a status and verify it actually landed in the persisted chat.
+
+    Open WebUI's status persistence (Chats.add_message_status_to_chat_by_id_and_message_id)
+    is an unlocked read-modify-write: concurrent status writers (e.g. the pipe's own
+    scheduled 'Thinking...' updates) can race and silently clobber each other's entry.
+    We can't fix that upstream race from here, but we can self-heal our own write by
+    re-checking it landed and resending if it was lost.
+    """
+    if not event_emitter:
+        return
+
+    try:
+        from open_webui.models.chats import Chats
+    except Exception:
+        Chats = None
+
+    for attempt in range(attempts):
+        try:
+            await event_emitter(
+                {"type": "status", "data": {"description": description, "done": done}}
+            )
+        except Exception:
+            return
+
+        if not Chats or not chat_id or not message_id:
+            return
+
+        try:
+            chat = await Chats.get_chat_by_id(chat_id)
+            history = (chat.chat or {}).get("history", {}) if chat else {}
+            status_list = (
+                history.get("messages", {}).get(message_id, {}).get("statusHistory", [])
+            )
+            if any(
+                s.get("description") == description and s.get("done") == done
+                for s in status_list
+            ):
+                return
+        except Exception:
+            return
+
+        await asyncio.sleep(retry_delay * (attempt + 1))
+
 # === owui_manifolds/filters/context_matching.py ===
 import fnmatch
 from typing import Any, Dict, List, Tuple
@@ -853,6 +921,9 @@ class ContextToolCompactionMixin:
         messages: List[dict],
         budget: int,
         persisted_cache: Dict[str, str] | None = None,
+        event_emitter: Any = None,
+        chat_id: str | None = None,
+        message_id: str | None = None,
     ) -> tuple[List[dict], Dict[str, str], Dict[str, Any]]:
         """Semantically reduce tool messages only when the candidate is over budget.
 
@@ -907,6 +978,12 @@ class ContextToolCompactionMixin:
             key = _cache_key(message, content, target_tokens)
             summary = cache.get(key) or _TOOL_SUMMARY_CACHE.get(key)
             if not summary:
+                await emit_status_durable(
+                    event_emitter,
+                    chat_id,
+                    message_id,
+                    f"Compacting tool result ({message.get('name') or 'tool'})…",
+                )
                 summary = await self.generate_tool_result_summary(
                     message,
                     target_tokens=target_tokens,
@@ -1178,6 +1255,9 @@ class ContextWindowMixin:
         blocks: List[Dict[str, str]],
         force: bool = False,
         preserve_latest_unit: bool = True,
+        event_emitter: Callable | None = None,
+        chat_id: str | None = None,
+        message_id: str | None = None,
     ) -> Tuple[List[dict], int, List[Dict[str, str]], Dict[str, Any]]:
         """Assemble anchor + persisted summary blocks + verbatim "pending" middle +
         recent messages, and compare THAT candidate to budget - not the raw
@@ -1264,6 +1344,12 @@ class ContextWindowMixin:
                     64,
                     min(fold_ceiling, max(64, budget - base_tokens)),
                 )
+                await emit_status_durable(
+                    event_emitter,
+                    chat_id,
+                    message_id,
+                    "Summarizing conversation…",
+                )
                 merged = await self.generate_overflow_summary(
                     oldest_two_messages,
                     target_tokens=block_target,
@@ -1301,6 +1387,12 @@ class ContextWindowMixin:
                 summary_target = max(
                     64,
                     min(fold_ceiling, max(64, budget - base_tokens)),
+                )
+                await emit_status_durable(
+                    event_emitter,
+                    chat_id,
+                    message_id,
+                    "Summarizing conversation…",
                 )
                 summary_text = await self.generate_overflow_summary(
                     excluded,
@@ -1363,6 +1455,7 @@ class ContextManager(
         __user__: Optional[dict] = None,
         __model__: Optional[dict] = None,
         __chat_id__: Optional[str] = None,
+        __message_id__: Optional[str] = None,
         **kwargs,
     ) -> dict:
         if context_is_prepared(body):
@@ -1375,6 +1468,7 @@ class ContextManager(
             __user__=__user__,
             __model__=__model__,
             __chat_id__=__chat_id__,
+            __message_id__=__message_id__,
             **kwargs,
         )
         return mark_context_prepared(processed)
@@ -1388,6 +1482,7 @@ class ContextManager(
         __user__: Optional[dict] = None,
         __model__: Optional[dict] = None,
         __chat_id__: Optional[str] = None,
+        __message_id__: Optional[str] = None,
         **kwargs,
     ) -> dict:
         if not self.valves.enable_processing:
@@ -1577,6 +1672,9 @@ class ContextManager(
                     blocks,
                     force=force_fold,
                     preserve_latest_unit=current_user_message is None,
+                    event_emitter=__event_emitter__,
+                    chat_id=__chat_id__,
+                    message_id=__message_id__,
                 )
             )
         except Exception as e:
@@ -1592,6 +1690,9 @@ class ContextManager(
                 candidate,
                 budget,
                 persisted_cache=state.get("tool_summaries", {}),
+                event_emitter=__event_emitter__,
+                chat_id=__chat_id__,
+                message_id=__message_id__,
             )
         )
 
@@ -1644,21 +1745,34 @@ class ContextManager(
             + current_user_tokens
             + request_overhead_tokens
         )
+        def _fmt_tokens(n: int) -> str:
+            return f"{n / 1000:.1f}K" if n >= 1000 else str(n)
+
         status_msg = (
-            f"Trimmed conversation history: {', '.join(status_parts)} "
-            f"({original_tokens:,}→{final_tokens:,} tokens)"
+            f"Trimmed history: {stats['kept']}/{len(history_messages)} kept"
+            + (
+                f", {stats['summarized_count']} summarized → {stats['block_count']} block(s)"
+                if stats["summarized_count"]
+                else ""
+            )
+            + (
+                f", {tool_stats['compacted']} tool result(s) compacted"
+                if tool_stats["compacted"]
+                else ""
+            )
+            + f" ({_fmt_tokens(original_tokens)}→{_fmt_tokens(final_tokens)} tok)"
         )
 
-        if __event_emitter__ and (stats["folded"] or tool_stats["compacted"]):
-            try:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {"description": status_msg, "done": True},
-                    }
-                )
-            except Exception:
-                pass
+        if stats["folded"] or tool_stats["compacted"]:
+            await emit_status_durable(
+                __event_emitter__,
+                __chat_id__,
+                __message_id__,
+                "Summarization complete",
+            )
+            await emit_status_durable(
+                __event_emitter__, __chat_id__, __message_id__, status_msg, done=True
+            )
 
         self.debug_log(1, status_msg, "🔧")
 
