@@ -22,6 +22,7 @@ from owui_manifolds.filters.context_marker import (
     context_is_prepared,
     mark_context_prepared,
 )
+from owui_manifolds.filters.context_status import emit_status_durable
 from owui_manifolds.filters.context_matching import ModelMatcher
 from owui_manifolds.filters.context_modeling import ContextModelingMixin
 from owui_manifolds.filters.context_persistence import ContextPersistenceMixin
@@ -68,6 +69,7 @@ class ContextManager(
         __user__: Optional[dict] = None,
         __model__: Optional[dict] = None,
         __chat_id__: Optional[str] = None,
+        __message_id__: Optional[str] = None,
         **kwargs,
     ) -> dict:
         if context_is_prepared(body):
@@ -80,6 +82,7 @@ class ContextManager(
             __user__=__user__,
             __model__=__model__,
             __chat_id__=__chat_id__,
+            __message_id__=__message_id__,
             **kwargs,
         )
         return mark_context_prepared(processed)
@@ -93,6 +96,7 @@ class ContextManager(
         __user__: Optional[dict] = None,
         __model__: Optional[dict] = None,
         __chat_id__: Optional[str] = None,
+        __message_id__: Optional[str] = None,
         **kwargs,
     ) -> dict:
         if not self.valves.enable_processing:
@@ -282,6 +286,9 @@ class ContextManager(
                     blocks,
                     force=force_fold,
                     preserve_latest_unit=current_user_message is None,
+                    event_emitter=__event_emitter__,
+                    chat_id=__chat_id__,
+                    message_id=__message_id__,
                 )
             )
         except Exception as e:
@@ -297,6 +304,9 @@ class ContextManager(
                 candidate,
                 budget,
                 persisted_cache=state.get("tool_summaries", {}),
+                event_emitter=__event_emitter__,
+                chat_id=__chat_id__,
+                message_id=__message_id__,
             )
         )
 
@@ -349,21 +359,34 @@ class ContextManager(
             + current_user_tokens
             + request_overhead_tokens
         )
+        def _fmt_tokens(n: int) -> str:
+            return f"{n / 1000:.1f}K" if n >= 1000 else str(n)
+
         status_msg = (
-            f"Trimmed conversation history: {', '.join(status_parts)} "
-            f"({original_tokens:,}→{final_tokens:,} tokens)"
+            f"Trimmed history: {stats['kept']}/{len(history_messages)} kept"
+            + (
+                f", {stats['summarized_count']} summarized → {stats['block_count']} block(s)"
+                if stats["summarized_count"]
+                else ""
+            )
+            + (
+                f", {tool_stats['compacted']} tool result(s) compacted"
+                if tool_stats["compacted"]
+                else ""
+            )
+            + f" ({_fmt_tokens(original_tokens)}→{_fmt_tokens(final_tokens)} tok)"
         )
 
-        if __event_emitter__ and (stats["folded"] or tool_stats["compacted"]):
-            try:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {"description": status_msg, "done": True},
-                    }
-                )
-            except Exception:
-                pass
+        if stats["folded"] or tool_stats["compacted"]:
+            await emit_status_durable(
+                __event_emitter__,
+                __chat_id__,
+                __message_id__,
+                "Summarization complete",
+            )
+            await emit_status_durable(
+                __event_emitter__, __chat_id__, __message_id__, status_msg, done=True
+            )
 
         self.debug_log(1, status_msg, "🔧")
 
